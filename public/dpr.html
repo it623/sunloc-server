@@ -499,7 +499,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v59G</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v59H</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -928,12 +928,19 @@ const MANPOWER_MASTER = {
 MANPOWER_MASTER['2F'] = MANPOWER_MASTER['1F'];
 
 // Get names for a role on a given floor (merges common + floor-specific)
+// v59H (Rahul via Ishan, 28 Oct): First and Second Floor share ONE manpower master. The Settings page already stored
+// FF/SF names under the 1F key, but the Second Floor entry screen read the 2F key (never written) and so showed only
+// the seed names — a name added for FF never appeared on SF. Every read and write for 2F now goes to the 1F store.
+function _mpStoreFloor(fl){ return fl === '2F' ? '1F' : fl; }
 function getMasterNames(fl, role){
   // Common roles: same across all floors
   if(MANPOWER_MASTER.common[role]) return getCustomNames(role, MANPOWER_MASTER.common[role]);
-  // Floor-specific: fall back to 1F list for 2F
-  const flData = MANPOWER_MASTER[fl] || MANPOWER_MASTER['1F'];
-  return getCustomNames(`${fl}_${role}`, flData[role] || []);
+  const sf = _mpStoreFloor(fl);
+  const flData = MANPOWER_MASTER[sf] || MANPOWER_MASTER['1F'];
+  const names = getCustomNames(`${sf}_${role}`, flData[role] || []);
+  // names that were saved under a 2F key by an older build still count — merged in once, never lost
+  if(fl === '2F'){ try{ const old = JSON.parse(localStorage.getItem('dpr_manpower_2F_'+role)||'null'); if(Array.isArray(old)) old.forEach(n=>{ if(n && !names.includes(n)) names.push(n); }); }catch{} }
+  return names;
 }
 
 // Get names including any admin-added custom names
@@ -946,9 +953,32 @@ function getCustomNames(key, defaults){
 }
 
 function saveCustomNames(fl, role, names){
-  const key = MANPOWER_MASTER.common[role] ? role : `${fl}_${role}`;
+  const key = MANPOWER_MASTER.common[role] ? role : `${_mpStoreFloor(fl)}_${role}`;   // v59H: 2F writes the shared FF/SF list
   localStorage.setItem('dpr_manpower_'+key, JSON.stringify(names));
-  pushSettingsToServer();
+  pushManpowerToServer();
+}
+// v59H: a manpower change is pushed ALONE and MERGED onto the server's current list first — pushSettingsToServer sent every
+// setting from this device's localStorage, so a device holding an older copy (another floor's PC, a tablet opened days ago)
+// silently put the master back to what it had the moment it changed anything. Server copy wins for everything but the
+// name just added / removed on this device.
+async function pushManpowerToServer(changedKey, action, name){
+  if(!serverUrl) return;
+  let serverMp = null;
+  try{ const r = await fetch(serverUrl+'/api/dpr/settings',{signal:AbortSignal.timeout(5000)}); const j = await r.json(); if(j && j.ok && j.settings && j.settings.dpr_manpower) serverMp = j.settings.dpr_manpower; }catch(_){}
+  const mp = Object.assign({}, serverMp || {}, serverMp ? {} : collectAllManpower());
+  if(changedKey){
+    const base = Array.isArray(mp[changedKey]) ? mp[changedKey].slice() : getCustomNames(changedKey, getDefaultsForKey(changedKey));
+    if(action === 'add' && name && !base.includes(name)) base.push(name);
+    if(action === 'remove' && name){ const i = base.indexOf(name); if(i >= 0) base.splice(i, 1); }
+    if(action === 'reset'){ delete mp[changedKey]; } else mp[changedKey] = base;
+    if(action !== 'reset'){ localStorage.setItem('dpr_manpower_'+changedKey, JSON.stringify(base)); }
+    Object.entries(mp).forEach(([k,v])=>{ try{ localStorage.setItem('dpr_manpower_'+k, JSON.stringify(v)); }catch{} });   // this device now holds the merged master
+  }
+  try{
+    await fetch(serverUrl+'/api/dpr/settings',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ settings:{ dpr_manpower: mp } }), signal:AbortSignal.timeout(5000) });
+    if(changedKey) toast('Manpower master saved — all floors see it on their next load','var(--cyan)');
+  }catch(_){ toast('Could not reach the server — the change is kept on this device and will go up with the next save','var(--amber)'); }
+  if(changedKey) renderManpowerSettings();
 }
 
 const SHIFTS = ['A','B','C'];
@@ -1344,7 +1374,7 @@ function renderManpowerSettings(){
     { key:'aim_staff',  label:'GF — AIM Team',           scope:'GF' },
     { key:'gpr_staff',  label:'GF — GPR Team',           scope:'GF' },
     // FF/SF specific
-    { key:'incharge',   label:'FF/SF — Shift Incharge',  scope:'1F' },
+    { key:'incharge',   label:'FF/SF — Shift Incharge (one list for both floors)',  scope:'1F' },
     { key:'operator',   label:'FF/SF — Machine Operators',scope:'1F' },
     { key:'fitter',     label:'FF/SF — Shift Fitters',   scope:'1F' },
     { key:'aim_staff',  label:'FF/SF — AIM Team',        scope:'1F' },
@@ -1388,7 +1418,7 @@ function addManpowerName(storeKey){
   if(!names.includes(name)){
     names.push(name);
     localStorage.setItem('dpr_manpower_'+storeKey, JSON.stringify(names));
-    pushSettingsToServer();
+    pushManpowerToServer(storeKey, 'add', name);   // v59H: merged onto the server copy, manpower only
   }
   inp.value = '';
   renderManpowerSettings();
@@ -1397,14 +1427,17 @@ function addManpowerName(storeKey){
 function removeManpowerName(storeKey, idx){
   const defaults = getDefaultsForKey(storeKey);
   const names = getCustomNames(storeKey, defaults);
+  const gone = names[idx];
   names.splice(idx, 1);
   localStorage.setItem('dpr_manpower_'+storeKey, JSON.stringify(names));
-  pushSettingsToServer();
+  pushManpowerToServer(storeKey, 'remove', gone);   // v59H
   renderManpowerSettings();
 }
 
 function resetManpowerNames(storeKey){
+  if(!confirm('Reset this list to the seed names on every floor?')) return;
   localStorage.removeItem('dpr_manpower_'+storeKey);
+  pushManpowerToServer(storeKey, 'reset');   // v59H: a reset used to stay on this device only and came back from the server on the next load
   renderManpowerSettings();
 }
 
