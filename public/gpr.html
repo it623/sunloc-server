@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v59F</title>
+<title>GPR · build v59G</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -420,8 +420,8 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v59F</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v59F</div>
+    <h1>GPR<span class="vpill">v59G</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v59G</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -441,7 +441,7 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v59F</span></div>
+  <div class="nbrand">GPR<span class="vpill">v59G</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <span style="display:inline-flex;align-items:center;gap:5px;margin-right:10px;padding:2px 6px;border:1px solid #3949ab;border-radius:6px;background:#232b6e" title="Production month — the month turns at 06:00 IST on the 1st (same rule as DPR, Tracking and Planning). Every list, picker and period view is scoped to this month's batch cohort; stock balances and pending receipts always show the live position.">
@@ -5049,8 +5049,8 @@ function renderRsMovements(){
   if(!rows.length){ el.innerHTML = '<div class="empty">No return-solution movements for this selection.</div>'; return; }
   const KIND = { generation:'RECOVERED', consumption:'DRAWN', correction:'CORRECTION' };
   let h = '<div class="tswrap" style="max-height:460px"><table class="gtable"><thead><tr><th>Day</th><th>When</th><th>Type</th><th>Lot (batch · side)</th><th>Into batch / TT</th><th>Colour code</th><th>PC</th><th>MC</th><th>Floor</th><th class="num" style="color:var(--green)">Credit L</th><th class="num" style="color:var(--red)">Debit L</th><th class="num">Balance L</th><th class="num">kg/L</th><th class="num">kg</th><th class="num">Balance kg</th><th>Note</th><th>By</th></tr></thead><tbody>';
-  if(d.from) h += '<tr><td colspan="11" style="color:var(--t3);font-size:11px">Opening balance brought forward</td><td class="num"><b>'+fmt(d.opening_l,1)+'</b></td><td></td><td></td><td class="num"><b>'+fmt(d.opening_kg,1)+'</b></td><td colspan="2"></td></tr>';
-  rows.forEach(r=>{
+  const _openRow = !d.from ? '' : '<tr><td colspan="11" style="color:var(--t3);font-size:11px">Opening balance brought forward</td><td class="num"><b>'+fmt(d.opening_l,1)+'</b></td><td></td><td></td><td class="num"><b>'+fmt(d.opening_kg,1)+'</b></td><td colspan="2"></td></tr>';
+  rows.slice().reverse().forEach(r=>{   // v59G: newest movement on top (each row carries its own running balance), opening balance at the foot
     const isCr = r.movement_type!=='consumption';
     const lot = isCr ? r.batch_number : (r.source_batch||r.batch_number);
     const kg = Number(r.virgin_kg||0);
@@ -5063,6 +5063,7 @@ function renderRsMovements(){
       + '<td class="num">'+(r.conc_kg_per_l!=null?Number(r.conc_kg_per_l).toFixed(3):'—')+'</td><td class="num">'+(isCr?'+':'−')+fmt(kg,1)+'</td><td class="num">'+fmt(r.balance_kg,1)+'</td>'
       + '<td style="font-size:11px;max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="'+esc(r.note||'')+'">'+esc(_rsNote(r.note))+'</td><td style="font-size:11px">'+esc(r.moved_by||'')+'</td></tr>';   /* v58P item 6: short note, full on hover */
   });
+  h += _openRow;
   h += '<tr style="background:var(--s3);font-weight:700"><td colspan="9">Totals</td><td class="num" style="color:var(--green)">'+fmt(d.credit_l,1)+'</td><td class="num" style="color:var(--red)">'+fmt(d.debit_l,1)+'</td><td class="num">'+fmt(d.closing_l,1)+'</td><td></td><td></td><td class="num">'+fmt(d.closing_kg,1)+'</td><td colspan="2"></td></tr>';
   el.innerHTML = h + '</tbody></table></div>';
 }
@@ -5143,8 +5144,8 @@ function renderOilyLedger(){
   if(!rows.length){ el.innerHTML = '<div class="empty">No oily salvage movements in this range.</div>'; return; }
   const SRC = { manual:'Entered in GPR', tracking:'From Tracking', dpr:'From DPR', return:'From return stock', tt:'Transfer tank' };
   let h = '<div class="tswrap" style="max-height:460px"><table class="gtable"><thead><tr><th>Day</th><th>When</th><th>Type</th><th>Batch</th><th>PC</th><th>MC</th><th>Floor</th><th>Source</th><th>TT</th><th class="num" style="color:var(--green)">Credit kg</th><th class="num" style="color:var(--red)">Debit kg</th><th class="num">Balance kg</th><th>Note</th><th>By</th></tr></thead><tbody>';
-  if(d.from) h += '<tr><td colspan="11" style="color:var(--t3);font-size:11px">Opening balance brought forward</td><td class="num"><b>'+fmt(d.opening_kg,1)+'</b></td><td colspan="2"></td></tr>';
-  rows.forEach(r=>{
+  const _openRow = !d.from ? '' : '<tr><td colspan="11" style="color:var(--t3);font-size:11px">Opening balance brought forward</td><td class="num"><b>'+fmt(d.opening_kg,1)+'</b></td><td colspan="2"></td></tr>';
+  rows.slice().reverse().forEach(r=>{   // v59G: newest on top, as the return-solution ledger
     const pend = r.receipt_status==='pending', voided = r.receipt_status==='rejected';   // v58I: voided rows shown struck, move nothing
     h += '<tr'+(pend?' style="background:var(--amber-l)"':(voided?' style="color:var(--t3);text-decoration:line-through"':''))+'><td class="mono">'+esc(_dm(r.production_day)||'—')+'</td><td class="mono" style="font-size:11px;white-space:nowrap">'+esc(_v58dDt(r.moved_at))+'</td>'
       + '<td style="font-size:11px">'+esc(r.movement_type||'')+(pend?' <span class="badge" style="background:var(--amber-l);color:var(--amber)">PENDING</span>':'')+'</td>'
@@ -5154,6 +5155,7 @@ function renderOilyLedger(){
       + '<td class="num" style="color:var(--red)">'+(r.debit_kg>0?fmt(r.debit_kg,2):'')+'</td>'
       + '<td class="num"><b>'+fmt(r.balance_kg,2)+'</b></td><td style="font-size:11px;max-width:260px;white-space:normal">'+esc(r.note||'')+'</td><td style="font-size:11px">'+esc(r.moved_by||'')+'</td></tr>';
   });
+  h += _openRow;
   h += '<tr style="background:var(--s3);font-weight:700"><td colspan="9">Totals</td><td class="num" style="color:var(--green)">'+fmt(d.credit_kg,2)+'</td><td class="num" style="color:var(--red)">'+fmt(d.debit_kg,2)+'</td><td class="num">'+fmt(d.closing_kg,2)+'</td><td colspan="2"></td></tr>';
   el.innerHTML = h + '</tbody></table></div>';
 }
@@ -5223,8 +5225,8 @@ async function _loadReceiptsInner(force){
 // v59E item 2 (Ishan, 27 Oct): the queue reads grouped by account, then day in order, then batch — not arrival order
 function _rcpSort(rows){
   return rows.slice().sort((a,b)=> String(a.account_label||a.account||'').localeCompare(String(b.account_label||b.account||''))
-    || String(a.production_day||'').localeCompare(String(b.production_day||''))
-    || String(a.batch_number||'').localeCompare(String(b.batch_number||'')) || (Number(a.id)-Number(b.id)));
+    || String(b.production_day||'').localeCompare(String(a.production_day||''))   // v59G (Ishan, 28 Oct): newest day first within the account
+    || String(a.batch_number||'').localeCompare(String(b.batch_number||'')) || (Number(b.id)-Number(a.id)));
 }
 function _rcpFiltered(){
   const src = (document.getElementById('rcp_src')||{}).value || '';
@@ -5920,11 +5922,11 @@ async function loadReconcile(bnArg, target){
   const sign = v => (v>0?'+':'') + fmt(v,1);
   const col = v => Math.abs(v)<0.05 ? 'var(--t3)' : (v>0 ? 'var(--red)' : 'var(--green)');
   let h = '<div class="kgrid">'
-    + kpi('Planned material', fmt(PM,1)+' kg', 'amber', (B.anchored ? 'anchored plan' : 'live plan')+' · gelatine '+fmt(P.gelatine,1)+' + colour '+fmt(P.colour,1)+(P.colourBasis&&P.colourBasis.basis==='pc-history'?' (PC history, '+P.colourBasis.tanks+' tanks)':(P.colourBasis&&P.colourBasis.basis==='default'?' (2.5 % default — no PC history yet)':'')))   /* v58N */
+    + kpi('Planned material', fmt(PM,1)+' kg', 'amber', (B.anchored ? 'anchored plan' : 'live plan')+' ÷ target yield '+(V.yieldTargetPct||103)+'% · gelatine '+fmt(P.gelatine,1)+' + colour '+fmt(P.colour,1)+(P.colourBasis&&P.colourBasis.basis==='pc-history'?' (PC history, '+P.colourBasis.tanks+' tanks)':(P.colourBasis&&P.colourBasis.basis==='default'?' (2.5 % default — no PC history yet)':'')))   /* v58N */
     + kpi('Net material charged', fmt(AM,1)+' kg', '', A.tanks+' tank'+(A.tanks===1?'':'s')+' · incl. colour'+(A.gelatineEquivGross!=null?' · gross issued '+fmt(A.gelatineEquivGross+A.colour,1)+' kg':''))   /* v58M items 9/10: net incl. colour, not gross */
     + kpi('Difference', sign(V.totalDifference)+' kg', V.totalDifference>0?'red':'green',
           PM>0 ? fmt(V.totalDifference/PM*100,1)+'% of plan' : '')
-    + kpi('Required for actual output', fmt(V.requiredForActual,1)+' kg', '', 'gross × actual weight')
+    + kpi('Required for actual output', fmt(V.requiredForActual,1)+' kg', '', 'gross × actual weight ÷ target yield '+(V.yieldTargetPct||103)+'%')
     + '</div>';
 
   h += '<div class="fgroup-title" style="margin-top:12px">A &mdash; Planned vs B &mdash; Actual, by component</div>';
@@ -5953,10 +5955,10 @@ async function loadReconcile(bnArg, target){
   const tot = Math.abs(V.qtyEffect)+Math.abs(V.weightEffect)+Math.abs(V.processVariance);
   const shr = v => tot>0 ? fmt(Math.abs(v)/tot*100,0)+'%' : '&mdash;';
   h += '<tr><td><b>1. Quantity produced</b><div style="font-size:11px;color:var(--t3)">More or less gross than planned consumes proportionally more or less material</div></td>'
-    + '<td class="mono" style="font-size:11px">('+fmt(B.grossActualLacs,2)+' &minus; '+fmt(B.grossPlannedLacs,2)+' lacs) × '+fmt(B.plannedAvgMg,1)+' mg</td>'
+    + '<td class="mono" style="font-size:11px">('+fmt(B.grossActualLacs,2)+' &minus; '+fmt(B.grossPlannedLacs,2)+' lacs) × '+fmt(B.plannedAvgMg,1)+' mg ÷ '+(V.yieldTargetPct||103)+'%</td>'
     + '<td class="num" style="color:'+col(V.qtyEffect)+'"><b>'+sign(V.qtyEffect)+'</b></td><td class="num">'+shr(V.qtyEffect)+'</td></tr>';
   h += '<tr><td><b>2. Capsule weight</b><div style="font-size:11px;color:var(--t3)">Heavier or lighter capsules than planned, from the production labels</div></td>'
-    + '<td class="mono" style="font-size:11px">('+fmt(B.actualAvgMg,1)+' &minus; '+fmt(B.plannedAvgMg,1)+' mg) × '+fmt(B.grossActualLacs,2)+' lacs</td>'
+    + '<td class="mono" style="font-size:11px">('+fmt(B.actualAvgMg,1)+' &minus; '+fmt(B.plannedAvgMg,1)+' mg) × '+fmt(B.grossActualLacs,2)+' lacs ÷ '+(V.yieldTargetPct||103)+'%</td>'
     + '<td class="num" style="color:'+col(V.weightEffect)+'"><b>'+sign(V.weightEffect)+'</b></td><td class="num">'+shr(V.weightEffect)+'</td></tr>';
   h += '<tr><td><b>3. Process / recording</b><div style="font-size:11px;color:var(--t3)">Everything quantity and weight do not explain &mdash; over-charge, spillage or entry error</div></td>'
     + '<td class="mono" style="font-size:11px">total &minus; cause 1 &minus; cause 2 <span style="color:var(--t3)">(output required '+fmt(V.requiredForActual,1)+' kg)</span></td>'
@@ -5967,22 +5969,35 @@ async function loadReconcile(bnArg, target){
   if(d.tt){
     const T = d.tt, sd = k => T[k];
     const sgn = v => (v>0?'+':'')+fmt(v,0);
-    h += '<div class="fgroup-title" style="margin-top:14px">D &mdash; Transfer tanks: planned vs issued</div>';
+    h += '<div class="fgroup-title" style="margin-top:14px">D &mdash; Transfer tanks: planned vs issued &mdash; <span style="font-weight:400;color:var(--t2)">solution VOLUME per tank, in litres</span></div>';
+    /* v59G (Ishan, 28 Oct — ZD163: +452 L "over-fill" beside −32.6 kg of material): this table is about TANK VOLUME — the litres
+       of solution each tank was filled to (gelatine of every form + water + colour) against the litres planned for it — not about
+       gelatine. A tank can be filled above its planned litres and still carry less net gelatine (thinner solution, or cuttings /
+       salvage that come back out of the net). The gelatine view is tables A–C above. */
+    const _A = d.actual||{};
+    /* v59G (Ishan, 28 Oct): NET litres = filled litres − the cuttings / salvage the batch generated back, converted at that
+       side's own tank concentration (gelatine in all forms ÷ L); C+B salvage credits apportioned by each side's filled litres. */
+    h += '<div class="hbnote" style="margin-bottom:6px">Litres are tank <b>solution volume</b> (gelatine in all forms + water + colour). <b>Net L</b> = filled L &minus; the cuttings / salvage this batch generated back, converted to litres at the side\'s own tank concentration &mdash; the volume that actually became capsules, comparable with the plan the way the net material in A&ndash;C is.'
+      + (Number(_A.litres)>0 ? ' Across these tanks: <b>'+fmt(_A.litres,0)+' L</b> filled, carrying <b>'+fmt(_A.gelatineEquivGross,1)+' kg</b> gross gelatine ('+(_A.gelatineEquivGross/_A.litres).toFixed(3)+' kg/L); net material <b>'+fmt(_A.netMaterial,1)+' kg</b>.' : '')+'</div>';
     h += '<table class="gtable"><thead><tr><th>Side</th><th class="num">TT planned</th><th class="num">TT issued</th>'
-      + '<th class="num">Variance</th><th class="num">Planned L</th><th class="num">Actual L</th>'
-      + '<th class="num">Over-fill</th><th class="num">Under-fill</th><th class="num">Avg hold</th><th class="num">Hold &lt; '+T.minHoldHours+'h</th></tr></thead><tbody>';
+      + '<th class="num">Variance</th><th class="num">Planned L</th><th class="num">Filled L</th><th class="num" title="cuttings + salvage generated back by this batch, kg ÷ the side\'s tank concentration">Generated back</th><th class="num"><b>Net L</b></th><th class="num">Net vs plan</th>'
+      + '<th class="num" title="per tank: filled above its planned litres (gross)">Tanks above plan</th><th class="num" title="per tank: filled below its planned litres (gross)">Tanks below plan</th><th class="num">Avg hold</th><th class="num">Hold &lt; '+T.minHoldHours+'h</th></tr></thead><tbody>';
     ['cap','body'].forEach(k=>{
       const a = sd(k);
       h += '<tr><td><b>'+k.toUpperCase()+'</b></td><td class="num">'+a.planned+'</td><td class="num"><b>'+a.issued+'</b></td>'
         + '<td class="num" style="color:'+(a.ttVariance===0?'var(--t3)':(a.ttVariance>0?'var(--red)':'var(--amber)'))+'">'+sgn(a.ttVariance)+'</td>'
         + '<td class="num">'+fmt(a.plannedLitres,0)+'</td><td class="num">'+fmt(a.actualLitres,0)+'</td>'
+        + '<td class="num" style="color:var(--t2)">&minus;'+fmt(a.generatedL,0)+' L <span style="font-size:10px;color:var(--t3)">('+fmt(a.generatedKg,1)+' kg @ '+(a.concKgPerL!=null?Number(a.concKgPerL).toFixed(3):'—')+')</span></td>'
+        + '<td class="num"><b>'+fmt(a.netLitres,0)+'</b></td><td class="num" style="color:'+(Math.abs(a.netVsPlanL)<0.5?'var(--t3)':(a.netVsPlanL>0?'var(--red)':'var(--amber)'))+'">'+sgn(a.netVsPlanL)+' L</td>'
         + '<td class="num">'+(a.overFillTanks?a.overFillTanks+' · '+fmt(a.overFillL,0)+' L':'&mdash;')+'</td>'
         + '<td class="num">'+(a.underFillTanks?a.underFillTanks+' · '+fmt(a.underFillL,0)+' L':'&mdash;')+'</td>'
         + '<td class="num">'+(a.avgHoldHours!=null?fmt(a.avgHoldHours,1)+' h':'&mdash;')+'</td>'
         + '<td class="num" style="color:'+(a.shortHold?'var(--red)':'var(--t3)')+'"><b>'+(a.shortHold||0)+'</b></td></tr>';
     });
     h += '<tr class="sumrow"><td>TOTAL</td><td class="num">'+T.total.planned+'</td><td class="num">'+T.total.issued+'</td>'
-      + '<td class="num">'+sgn(T.total.ttVariance)+'</td><td class="num">&mdash;</td><td class="num">'+sgn(T.total.netFillL)+' L</td>'
+      + '<td class="num">'+sgn(T.total.ttVariance)+'</td><td class="num">'+fmt(T.total.plannedLitres,0)+'</td><td class="num">'+fmt(T.total.actualLitres,0)+'</td>'
+      + '<td class="num" style="color:var(--t2)">&minus;'+fmt(T.total.generatedL,0)+' L <span style="font-size:10px;color:var(--t3)">('+fmt(T.total.generatedKg,1)+' kg)</span></td>'
+      + '<td class="num"><b>'+fmt(T.total.netLitres,0)+'</b></td><td class="num" style="color:'+(Math.abs(T.total.netVsPlanL)<0.5?'var(--t3)':(T.total.netVsPlanL>0?'var(--red)':'var(--amber)'))+'"><b>'+sgn(T.total.netVsPlanL)+' L</b></td>'
       + '<td class="num">'+T.total.overFillTanks+' · '+fmt(T.total.overFillL,0)+' L</td>'
       + '<td class="num">'+T.total.underFillTanks+' · '+fmt(T.total.underFillL,0)+' L</td>'
       + '<td class="num">&mdash;</td><td class="num"><b>'+T.total.shortHold+'</b></td></tr></tbody></table>';
@@ -6084,7 +6099,7 @@ function exportPerf(){
       {key:'capPlanned',label:'Cap TT plan',w:12,num:true},{key:'capIssued',label:'Cap TT issued',w:13,num:true},
       {key:'bodyPlanned',label:'Body TT plan',w:13,num:true},{key:'bodyIssued',label:'Body TT issued',w:14,num:true},
       {key:'ttVariance',label:'TT variance',w:12,num:true},
-      {key:'overFillTanks',label:'Over-fill tanks',w:14,num:true},{key:'overFillL',label:'Over-fill L',w:12,num:true},
+      {key:'netLitres',label:'Net L (filled − generated back)',w:16,num:true},{key:'netVsPlanL',label:'Net vs plan L',w:12,num:true},{key:'overFillTanks',label:'Over-fill tanks',w:14,num:true},{key:'overFillL',label:'Over-fill L',w:12,num:true},
       {key:'underFillTanks',label:'Under-fill tanks',w:15,num:true},{key:'underFillL',label:'Under-fill L',w:13,num:true},
       {key:'avgHoldCap',label:'Avg hold cap (h)',w:15,num:true},{key:'avgHoldBody',label:'Avg hold body (h)',w:16,num:true},
       {key:'shortHold',label:'Holds under min',w:15,num:true} ] });
@@ -6100,9 +6115,9 @@ function exportReconcile(){
       { item:'Actual cutting', kg:A.cutting, note:'' }, { item:'Actual FG remelt', kg:A.fgRemelt, note:'' },
       { item:'Actual gelatine-equivalent total', kg:A.gelatineEquiv, note:A.tanks+' tanks' },
       { item:'Planned colour + TiO2', kg:P.colour, note:'' }, { item:'Actual colour + TiO2', kg:A.colour, note:'' },
-      { item:'Required for actual output', kg:V.requiredForActual, note:'gross × actual weight' },
-      { item:'Cause 1 — quantity produced', kg:V.qtyEffect, note:'('+B.grossActualLacs+' − '+B.grossPlannedLacs+' lacs) × '+B.plannedAvgMg+' mg' },
-      { item:'Cause 2 — capsule weight', kg:V.weightEffect, note:'('+B.actualAvgMg+' − '+B.plannedAvgMg+' mg) × '+B.grossActualLacs+' lacs' },
+      { item:'Required for actual output', kg:V.requiredForActual, note:'gross × actual weight ÷ target yield '+(V.yieldTargetPct||103)+'%' },
+      { item:'Cause 1 — quantity produced', kg:V.qtyEffect, note:'('+B.grossActualLacs+' − '+B.grossPlannedLacs+' lacs) × '+B.plannedAvgMg+' mg ÷ '+(V.yieldTargetPct||103)+'%' },
+      { item:'Cause 2 — capsule weight', kg:V.weightEffect, note:'('+B.actualAvgMg+' − '+B.plannedAvgMg+' mg) × '+B.grossActualLacs+' lacs ÷ '+(V.yieldTargetPct||103)+'%' },
       { item:'Cause 3 — process / recording', kg:V.processVariance, note:'charged − required' },
       { item:'TOTAL DIFFERENCE', kg:V.totalDifference, note:'' },
     ],
@@ -6538,7 +6553,7 @@ function exportMaterialReconFlat(){
       {key:'capPlanned',label:'Cap TT plan',w:12,num:true},{key:'capIssued',label:'Cap TT issued',w:13,num:true},
       {key:'bodyPlanned',label:'Body TT plan',w:13,num:true},{key:'bodyIssued',label:'Body TT issued',w:14,num:true},
       {key:'ttVariance',label:'TT variance',w:12,num:true},
-      {key:'overFillTanks',label:'Over-fill tanks',w:14,num:true},{key:'overFillL',label:'Over-fill L',w:12,num:true},
+      {key:'netLitres',label:'Net L (filled − generated back)',w:16,num:true},{key:'netVsPlanL',label:'Net vs plan L',w:12,num:true},{key:'overFillTanks',label:'Over-fill tanks',w:14,num:true},{key:'overFillL',label:'Over-fill L',w:12,num:true},
       {key:'underFillTanks',label:'Under-fill tanks',w:15,num:true},{key:'underFillL',label:'Under-fill L',w:13,num:true},
       {key:'avgHoldCap',label:'Avg hold cap (h)',w:15,num:true},{key:'avgHoldBody',label:'Avg hold body (h)',w:16,num:true},
       {key:'shortHold',label:'Holds under min',w:15,num:true} ] });

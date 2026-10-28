@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v59F';
+const APP_BUILD = 'v59G';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -26838,7 +26838,11 @@ function gprComputeSolutionPlan({ grossLakhs, size, machineId, masters, actualAv
   const g = Number(grossLakhs || 0);
 
   const capsuleMassKg  = g * avgMg / 10;
-  const gelatineKg     = capsuleMassKg;
+  // v59G (Ishan, 28 Oct): the gelatine to issue is the capsule mass ÷ the TARGET YIELD (103 %: 3 % moisture gain less
+  // wash) — planning at 100 % over-issued by that margin. Litres follow the gelatine exactly; only the tank COUNT is
+  // rounded up to the next whole tank (a part tank still has to be prepared), the litres never are.
+  const _yfPlan = _v59gYieldFactor(masters);
+  const gelatineKg     = capsuleMassKg / _yfPlan;
   const totalSolutionL = gPerL > 0 ? gelatineKg / gPerL : 0;
   const capL   = totalSolutionL * capFrac;
   const bodyL  = totalSolutionL * bodyFrac;
@@ -26853,7 +26857,7 @@ function gprComputeSolutionPlan({ grossLakhs, size, machineId, masters, actualAv
   return {
     inputs: { grossLakhs: g, size, machineId, avgMg, grossSource: 'planning' },
     capsuleMassKg: +capsuleMassKg.toFixed(2),
-    gelatineKg: +gelatineKg.toFixed(2),
+    gelatineKg: +gelatineKg.toFixed(2), yieldBasisPct: +(_yfPlan * 100).toFixed(1),   // v59G
     colourKg: +colourKg.toFixed(2),
     colourBasis: colourBasis ? { basis: colourBasis.basis, frac: colourFrac, tanks: colourBasis.tanks || 0, batches: colourBasis.batches || 0 } : { basis: 'default', frac: colourFrac, tanks: 0, batches: 0 },   // v58N
     totalSolutionL: +totalSolutionL.toFixed(1),
@@ -29120,12 +29124,21 @@ async function _gprPlanAnchor(batch) {
     const bn = String(batch || '').toUpperCase();
     const r = pgPool ? (await pgPool.query(sql, [bn])).rows[0] : db.prepare(sql).get(bn);
     if (!r) return null;
+    // v59G: anchors written before this build were planned at 100 % (gelatine = capsule mass). They are brought to the
+    // target basis on read — gelatine and litres ÷ target yield, tank counts re-rounded up — so every consumer sees one
+    // basis; the stored row is left as written. A row already at the target (gelatine ≈ mass ÷ target) passes through.
+    const _mass = Number(r.gross_lakhs || 0) * Number(r.avg_mg || 0) / 10;
+    const _yfA = _v59gYieldFactor(await gprLoadMasters().catch(() => null));
+    const _gel = Number(r.gelatine_kg || 0);
+    const _legacy = _mass > 0 && _gel > 0 && Math.abs(_gel / _mass - 1) < 0.005 && _yfA > 1.0005;
+    const k = _legacy ? 1 / _yfA : 1;
+    const capL = Number(r.cap_litres || 0) * k, bodyL = Number(r.body_litres || 0) * k, capF = Number(r.cap_fill_l || 0), bodyF = Number(r.body_fill_l || 0);
     return {
-      anchored: true, anchoredAt: r.anchored_at, anchoredBy: r.anchored_by,
+      anchored: true, anchoredAt: r.anchored_at, anchoredBy: r.anchored_by, yieldBasisPct: +(_yfA * 100).toFixed(1), normalisedFrom100: _legacy,
       inputs: { grossLakhs: Number(r.gross_lakhs || 0), size: r.size, machineId: r.machine_id, avgMg: Number(r.avg_mg || 0) },
-      gelatineKg: Number(r.gelatine_kg || 0), totalSolutionL: Number(r.solution_l || 0), colourKg: Number(r.colour_kg || 0), colourBasis: { basis: 'anchored' },   // v58N
-      cap: { litres: Number(r.cap_litres || 0), fillL: Number(r.cap_fill_l || 0), ttPlanned: Number(r.cap_tt || 0) },
-      body: { litres: Number(r.body_litres || 0), fillL: Number(r.body_fill_l || 0), ttPlanned: Number(r.body_tt || 0) },
+      gelatineKg: +(_gel * k).toFixed(2), totalSolutionL: +(Number(r.solution_l || 0) * k).toFixed(1), colourKg: Number(r.colour_kg || 0), colourBasis: { basis: 'anchored' },   // v58N
+      cap: { litres: +capL.toFixed(1), fillL: capF, ttPlanned: _legacy ? (capF > 0 ? Math.ceil(capL / capF - 1e-9) : Number(r.cap_tt || 0)) : Number(r.cap_tt || 0) },
+      body: { litres: +bodyL.toFixed(1), fillL: bodyF, ttPlanned: _legacy ? (bodyF > 0 ? Math.ceil(bodyL / bodyF - 1e-9) : Number(r.body_tt || 0)) : Number(r.body_tt || 0) },
     };
   } catch (e) { return null; }
 }
@@ -29329,10 +29342,11 @@ app.get('/api/gpr/performance', async (req, res) => {
         const aG = live ? Number(live.aGrade || 0) : 0;
         const Qa = grossA > 0 ? grossA : (aG > 0 && aimPct > 0 ? aG / (aimPct / 100) : 0);
         const Qp = Number(planned.inputs.grossLakhs || 0);
-        const Wp = Number(planned.inputs.avgMg || 0) / 10;
+        const _yf = _v59gYieldFactor(masters);   // v59G: ÷ target yield on both sides
+        const Wp = Number(planned.inputs.avgMg || 0) / 10 / _yf;
         const WaMg = wt.actualMg != null ? Number(wt.actualMg) : Number(wt.avgMg || 0);
-        const Wa = WaMg / 10;
-        const plannedGel = +(Number(planned.gelatineKg || 0) + Number(planned.colourKg || 0)).toFixed(2);   // v58M: plan incl. colour, like the used side
+        const Wa = WaMg / 10 / _yf;
+        const plannedGel = +(Number(planned.gelatineKg || 0) + Number(planned.colourKg || 0)).toFixed(2);   // v58M: plan incl. colour, like the used side; v59G: the plan itself is at the target yield now
         const requiredForActual = +(Qa * Wa).toFixed(2);
         const qtyEffect = +((Qa - Qp) * Wp).toFixed(2);
         const weightEffect = +((Wa - Wp) * Qa).toFixed(2);
@@ -29359,6 +29373,7 @@ app.get('/api/gpr/performance', async (req, res) => {
           ttPlanned: tt.total.planned, ttIssued: tt.total.issued, ttEntered: tt.total.entered,
           ttVariance: tt.total.ttVariance, overFillTanks: tt.total.overFillTanks, underFillTanks: tt.total.underFillTanks,
           overFillL: tt.total.overFillL, underFillL: tt.total.underFillL, netFillL: tt.total.netFillL,
+          netLitres: tt.total.netLitres, netVsPlanL: tt.total.netVsPlanL, generatedBackL: tt.total.generatedL,   // v59G
           shortHold: tt.total.shortHold,
           capPlanned: tt.cap.planned, capIssued: tt.cap.issued, bodyPlanned: tt.body.planned, bodyIssued: tt.body.issued,
           avgHoldCap: tt.cap.avgHoldHours, avgHoldBody: tt.body.avgHoldHours,
@@ -29387,6 +29402,14 @@ function _gprHoldHours(t) {
   const a = P(t.scan_in_at), b = P(t.scan_out_at);
   if (a == null || b == null || b < a) return null;
   return +((b - a) / 3600000).toFixed(2);
+}
+// ═══ v59G (Ishan, 28 Oct): the material a quantity of capsules REQUIRES is its capsule mass ÷ the target yield (103 % —
+// the 3 % moisture gain less wash), not its capsule mass at 100 %. Applied to BOTH sides of the reconciliation — the
+// planned gelatine (the anchored plan was built at 100 %) and "required for actual output" — so planned vs used
+// compares like for like and the three cause buckets still reproduce the total exactly. Colour is unaffected.
+function _v59gYieldFactor(masters) {
+  const C = (masters && masters.gpr_constants) || GPR_SEED_MASTERS.gpr_constants;
+  const t = Number(C.yieldTargetPct || 103); return t > 0 ? t / 100 : 1;
 }
 async function _gprTtVariance(bn, plan, masters) {
   const minHold = _gprMinHold(masters);
@@ -29419,15 +29442,35 @@ async function _gprTtVariance(bn, plan, masters) {
       }
     }
   });
-  ['cap', 'body'].forEach(k => {
+  // ═══ v59G (Ishan, 28 Oct): NET litres per side — the litres filled less the cuttings / salvage the batch generated
+  // back, converted at that side's own tank concentration (gelatine in all forms ÷ litres). Cuttings carry a side;
+  // Tracking salvage credits are C+B and are apportioned by each side's filled litres. Pending credits count too
+  // (they are material that came out of these tanks whether or not GPR has taken them in yet).
+  const _gen = { cap: 0, body: 0, both: 0 };
+  try {
+    const gSql = `SELECT LOWER(COALESCE(side,'')) AS side, COALESCE(SUM(qty_kg),0) AS kg FROM gpr_ledger
+                  WHERE UPPER(batch_number)=${P} AND movement_type='generation' AND COALESCE(receipt_status,'')<>'rejected'
+                    AND source NOT IN ('estimate','return') AND account<>'return_remelt' GROUP BY LOWER(COALESCE(side,''))`;
+    const gr = pgPool ? (await pgPool.query(gSql, [String(bn).toUpperCase()])).rows : db.prepare(gSql).all(String(bn).toUpperCase());
+    (gr || []).forEach(r => { const k = r.side === 'cap' || r.side === 'body' ? r.side : 'both'; _gen[k] += Number(r.kg || 0); });
+  } catch (_) {}
+  const _totL = Number(out.cap.actualLitres || 0) + Number(out.body.actualLitres || 0);
+  for (const k of ['cap', 'body']) {
     const a = out[k];
     a.planned = plan && plan[k] ? Number(plan[k].ttPlanned || 0) : 0;
     a.ttVariance = a.issued - a.planned;
     a.avgHoldHours = a.holdN ? +(a.holdSum / a.holdN).toFixed(2) : null;
     ['plannedLitres', 'actualLitres', 'overFillL', 'underFillL'].forEach(f => { a[f] = +a[f].toFixed(1); });
     a.netFillL = +(a.actualLitres - a.plannedLitres).toFixed(1);
+    const share = _totL > 0 ? a.actualLitres / _totL : 0.5;
+    a.generatedKg = +(_gen[k] + _gen.both * share).toFixed(2);
+    let conc = null; try { conc = (await _v58mBatchConc(bn, k, masters)).conc; } catch (_) {}
+    a.concKgPerL = conc;
+    a.generatedL = conc > 0 ? +(a.generatedKg / conc).toFixed(1) : 0;
+    a.netLitres = +(a.actualLitres - a.generatedL).toFixed(1);
+    a.netVsPlanL = +(a.netLitres - a.plannedLitres).toFixed(1);
     delete a.holdSum; delete a.holdN;
-  });
+  }
   const tot = {
     planned: out.cap.planned + out.body.planned, issued: out.cap.issued + out.body.issued,
     entered: out.cap.entered + out.body.entered,
@@ -29438,6 +29481,9 @@ async function _gprTtVariance(bn, plan, masters) {
     shortHold: out.cap.shortHold + out.body.shortHold,
   };
   tot.ttVariance = tot.issued - tot.planned;
+  tot.generatedKg = +(out.cap.generatedKg + out.body.generatedKg).toFixed(2); tot.generatedL = +(out.cap.generatedL + out.body.generatedL).toFixed(1);   // v59G
+  tot.plannedLitres = +(out.cap.plannedLitres + out.body.plannedLitres).toFixed(1); tot.actualLitres = +(out.cap.actualLitres + out.body.actualLitres).toFixed(1);
+  tot.netLitres = +(out.cap.netLitres + out.body.netLitres).toFixed(1); tot.netVsPlanL = +(tot.netLitres - tot.plannedLitres).toFixed(1);
   tot.netFillL = +(out.cap.netFillL + out.body.netFillL).toFixed(1);
   return { cap: out.cap, body: out.body, total: tot, shortHoldTanks, minHoldHours: minHold };
 }
@@ -29507,11 +29553,12 @@ app.get('/api/gpr/reconcile/:batch', async (req, res) => {
     const Qa = grossActualLacs > 0 ? grossActualLacs
              : (aGradeLacs > 0 && aimPct > 0 ? +(aGradeLacs / (aimPct / 100)).toFixed(3) : 0);
     const Qp = Number(planned.inputs.grossLakhs || 0);
-    const Wp = Number(planned.inputs.avgMg || 0) / 10;        // kg per lac
+    const _yf = _v59gYieldFactor(masters);                    // v59G: ÷ target yield on both sides
+    const Wp = Number(planned.inputs.avgMg || 0) / 10 / _yf;  // kg per lac REQUIRED at the target yield
     const WaMg = wt.actualMg != null ? Number(wt.actualMg) : Number(wt.avgMg || 0);
-    const Wa = WaMg / 10;
+    const Wa = WaMg / 10 / _yf;
 
-    const plannedGelatine = Number(planned.gelatineKg || 0);
+    const plannedGelatine = +Number(planned.gelatineKg || 0).toFixed(3);   // v59G: already at the target yield (calculator / normalised anchor)
     const plannedMaterial = +(plannedGelatine + Number(planned.colourKg || 0)).toFixed(3);   // v58M: plan incl. colour, like the used side
     const requiredForActual = +(Qa * Wa).toFixed(3);          // what the real output mathematically needed
     const qtyEffect = +((Qa - Qp) * Wp).toFixed(3);
@@ -29534,7 +29581,7 @@ app.get('/api/gpr/reconcile/:batch', async (req, res) => {
       planned: { gelatine: +plannedGelatine.toFixed(3), colour: +Number(planned.colourKg || 0).toFixed(3), colourBasis: planned.colourBasis || null, material: plannedMaterial,
         solutionL: +Number(planned.totalSolutionL || 0).toFixed(1) },
       actual,
-      variance: { requiredForActual, totalDifference, qtyEffect, weightEffect, processVariance, identityCheck: check },
+      variance: { requiredForActual, totalDifference, qtyEffect, weightEffect, processVariance, identityCheck: check, yieldTargetPct: +(_yf * 100).toFixed(1) },   // v59G
       tt: await _gprTtVariance(bn, planned, masters),   // v56G item 1: TT planned vs issued, fill and hold
     });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
@@ -32133,13 +32180,14 @@ app.get('/api/gpr/plan', async (req, res) => {
           const _agg = agg;
           const usedGelGross = +(((_agg.cap || {}).gelKg || 0) + ((_agg.body || {}).gelKg || 0)).toFixed(2);
           const Qp2 = Number(sPlan.inputs.grossLakhs || 0);
-          const Wp2 = Number(sPlan.inputs.avgMg || 0) / 10;
+          const _yf2 = _v59gYieldFactor(masters);   // v59G: ÷ target yield on both sides of the MAT PLAN / MAT USED reconciliation
+          const Wp2 = Number(sPlan.inputs.avgMg || 0) / 10 / _yf2;
           const _aimPct = live && live.aimPct != null ? Number(live.aimPct) : null;
           const _grossA = live ? Number(live.gross || 0) : 0;
           const _aG = live ? Number(live.aGrade || 0) : 0;
           const Qa2 = _grossA > 0 ? _grossA : (_aG > 0 && _aimPct > 0 ? _aG / (_aimPct / 100) : 0);
           const WaMg2 = wByBatch[bn] != null ? wByBatch[bn] : Number(sPlan.inputs.avgMg || 0);
-          const Wa2 = WaMg2 / 10;
+          const Wa2 = WaMg2 / 10 / _yf2;
           // v58M items 9/10 (Ishan, 19 Oct): MAT USED is the NET gelatine-equivalent — the batch's own
           // cuttings / salvage generated back to stock, Tracking salvage, the salvage its WIP will still
           // return and return solution recovered at close all come off; return solution used goes on.
@@ -32156,7 +32204,7 @@ app.get('/api/gpr/plan', async (req, res) => {
           } catch (_) {}
           const reqForActual = +(Qa2 * Wa2).toFixed(2);
           // v58M (Ishan, 19 Oct): the plan side carries its colour too, so planned vs used compare like for like
-          const plannedMat2 = +(Number(sPlan.gelatineKg || 0) + Number(sPlan.colourKg || 0)).toFixed(2);
+          const plannedMat2 = +(Number(sPlan.gelatineKg || 0) + Number(sPlan.colourKg || 0)).toFixed(2);   // v59G: the plan is at the target yield already
           row.recon = {
             plannedGel: plannedMat2, plannedGelOnly: +Number(sPlan.gelatineKg || 0).toFixed(2), plannedColour: +Number(sPlan.colourKg || 0).toFixed(2), plannedColourBasis: sPlan.colourBasis || null, usedGel,
             totalDifference: +(usedGel - plannedMat2).toFixed(2),
