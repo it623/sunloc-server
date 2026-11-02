@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v59H</p>
+      <p>Planning Suite v3.0 · build v59L</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1823,7 +1823,7 @@ function loadState() {
       const assigned = (state.printOrders||[]).filter(p => p.machineId && p.machineId !== 'null' && p.machineId !== '');
       if (_url && assigned.length > 0) {
         const r = await fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v59H' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v59L' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: assigned }),
           signal: AbortSignal.timeout(15000)
         });
@@ -1851,7 +1851,7 @@ function loadState() {
       } else if (_url && allOrders.length > 0) {
         try { localStorage.setItem(_mig51y, _today51y); } catch (e) {}
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v59H', 'X-Sunloc-User': ((typeof currentUser!=='undefined' && currentUser && currentUser.username) || '') },   // v53K item 2
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v59L', 'X-Sunloc-User': ((typeof currentUser!=='undefined' && currentUser && currentUser.username) || '') },   // v53K item 2
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -2221,6 +2221,9 @@ function getPcByCode(size, code) {
 // Stage wastage factors (standard defaults, overridden by live tracking actuals)
 const STD_AIM_WASTE    = 0.07;  // 7% AIM wastage
 const STD_PRINT_WASTE  = 0.01;  // 1% printing machine wastage
+// v59J (Shri Kant Gupta, 31 Oct 2026): current packing types — 3 Ply eliminated. v59L (Ishan): three 5 Ply box types.
+// Tracking's carton tare table (PACK_TARE_KG) must carry every value listed here.
+const PACKING_TYPES = ['5 Ply Box (Green)','5 Ply Box (Blue)','5 Ply Box (Blue with HDCL)'];   // v59L (Ishan, 2 Nov 2026): three options — tare 1.5 / 2.0 / 2.5 kg in Tracking
 // v41d: orders at/above this size (Lakhs) offer the planner a 30/20 dispatch-split choice;
 // smaller orders always ship as a single lot. First lot is 30L, second is the balance.
 const DISPATCH_SPLIT_THRESHOLD = 50;
@@ -2646,7 +2649,7 @@ async function saveState() {
             state.printOrders = dedupedPOs; // also fix local state
           }
           fetch(_url + '/api/print-orders/bulk', {
-            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v59H'},   // v51ZF: audit names the writing build
+            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build': 'v59L'},   // v51ZF: audit names the writing build
             body: JSON.stringify({ printOrders: dedupedPOs }),
             signal: AbortSignal.timeout(8000)
           }).catch(()=>{});
@@ -5310,10 +5313,10 @@ function showAddOrderModal(machineId, existingOrder) {
         <label>📦 Packing</label>
         <select class="form-control" id="fo-packing">
           <option value="" ${!ord.packing?'selected':''}>— Select —</option>
-          <option value="3 Ply" ${ord.packing==='3 Ply'?'selected':''}>3 Ply</option>
-          <option value="3 Ply with HDCL" ${ord.packing==='3 Ply with HDCL'?'selected':''}>3 Ply with HDCL</option>
-          <option value="5 Ply" ${ord.packing==='5 Ply'?'selected':''}>5 Ply</option>
-          ${ord.packing && !['3 Ply','3 Ply with HDCL','5 Ply'].includes(ord.packing) ? `<option value="${ord.packing}" selected>${ord.packing} (legacy)</option>` : ''}
+          <!-- v59J (Shri Kant Gupta, 31 Oct): 3 Ply packing is discontinued — four 5 Ply box types replace the old set.
+               An order already carrying an old value keeps it (shown as legacy) until the planner changes it. -->
+          ${PACKING_TYPES.map(t=>`<option value="${t}" ${ord.packing===t?'selected':''}>${t}</option>`).join('')}
+          ${ord.packing && !PACKING_TYPES.includes(ord.packing) ? `<option value="${ord.packing}" selected>${ord.packing} (legacy — discontinued)</option>` : ''}
         </select>
       </div>
       <div class="form-group">
@@ -6019,7 +6022,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v59H'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build': 'v59L'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -6263,7 +6266,7 @@ function importSAP() {
 
 function downloadSAPTemplate() {
   const headers = ['PO_Number','Batch_Number','Customer','Size','PC_Code','Colour','Printed_YN','Qty_Lakhs','Machine_ID','Packing','Zone','Printing_Matter','Remarks'];
-  const sample = ['26ZD23','BT001','ALKEM','2','21065','PU/WH','N','100','MC30','HDCL','BADDI','',''];
+  const sample = ['26ZD23','BT001','ALKEM','2','21065','PU/WH','N','100','MC30','5 Ply Box (Blue)','BADDI','',''];   // v59J: current packing type
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.aoa_to_sheet([headers, sample]);
   XLSX.utils.book_append_sheet(wb, ws, 'SAP_Import');
@@ -7035,9 +7038,7 @@ function _v39_openAssignModal(idx) {
     <div class="form-group"><label>📦 Packing *</label>
       <select id="v39-assign-packing" class="form-control">
         <option value="" selected>— Select —</option>
-        <option value="3 Ply">3 Ply</option>
-        <option value="3 Ply with HDCL">3 Ply with HDCL</option>
-        <option value="5 Ply">5 Ply</option>
+        ${PACKING_TYPES.map(t=>`<option value="${t}">${t}</option>`).join('')}
       </select>
     </div>
     <!-- v41e (issue 3): zone drives domestic vs export dispatch; not reliably in SAP, so set here. -->
@@ -8910,7 +8911,7 @@ async function updatePrintStartDate(id, val) {
   try {
     const r = await fetch(`${window.SUNLOC_SERVER_URL || ''}/api/admin/print-order-start-date`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v59H' },
+      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v59L' },
       body: JSON.stringify({ id, startDate: val, token: currentUser?.token || '' }),
     });
     const j = await r.json();
@@ -9360,7 +9361,7 @@ async function savePrintModal(existingId) {
       const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
       if (_url) {
         fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v59H' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v59L' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: newOrders }),
           signal: AbortSignal.timeout(8000)
         });
@@ -9410,7 +9411,7 @@ async function savePrintModal(existingId) {
         const _savePrintToDB = async (attempt) => {
           try {
             const r = await fetch(_url + '/api/print-orders/bulk', {
-              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v59H' },   // v51ZF: audit names the writing build
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v59L' },   // v51ZF: audit names the writing build
               body: JSON.stringify({ printOrders: [ord] }),
               signal: AbortSignal.timeout(8000)
             });
@@ -9499,7 +9500,7 @@ async function upsertPrintOrderToDB(po) {
       try {
         const r = await fetch(_url + '/api/print-orders/bulk', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v59H' },   // v51ZF: audit names the writing build
+          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v59L' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: [po] }),
           signal: AbortSignal.timeout(8000)
         });
@@ -10895,6 +10896,17 @@ function autoGenerateDispatchPlans() {
     // out via the branch above.
     const produced = (parseFloat(o.actualProd || o.actualQty || 0) > 0);
     if (!produced) return false;
+    // v59L (Ishan, 2 Nov 2026 — Dispatch Plan flipping 163 ↔ 301 orders every render): from 1 Nov the
+    // header month no longer admitted October's closed orders via getMonthOrders(), so a fully-shipped
+    // October order had its 'dispatched' auto plan PRUNED on one render (no not-yet-shipped lot → not
+    // carried over → not a valid order → plan removed) and REGENERATED as 'pending' on the next (this
+    // branch: closed within 90 days, no plan yet) — which re-admitted it, inflated every zone card, and
+    // was pruned again a render later. Rule: a batch whose Tracking dispatch total already covers the
+    // order quantity is shipped — nothing to plan — so no plan is regenerated for it. Same test the
+    // regenerated plan would have met in _v51nApplyDispatchActuals (actualDispatched >= qty).
+    const _shipped59l = state._dispatchActualsQty ? state._dispatchActualsQty[o.batchNumber] : undefined;
+    const _orderQty59l = parseFloat(o.qty || o.grossQty || 0);
+    if (_shipped59l !== undefined && _orderQty59l > 0 && Number(_shipped59l) >= _orderQty59l - 0.001) return false;
     const closedRef = o.closedDate || o.endDate;
     if (!closedRef) return true; // no close date but produced+closed → keep visible to be safe
     const daysSinceClose = (Date.now() - new Date(closedRef).getTime()) / 86400000;
@@ -11280,6 +11292,10 @@ function renderDispatch() {
   `;
 
   autoGenerateDispatchPlans(); // ensure auto plans are up to date
+  // v59L: settle any plan autoGenerateDispatchPlans has just (re)created BEFORE membership and the zone
+  // cards are computed — a regenerated lot that Tracking already shows as shipped is normalised to
+  // 'dispatched' here, never painted as pending. Same order loadTrackingStatus uses (apply after generate).
+  if (_v51nSettled) _v51nApplyDispatchActuals();
 
   // Filter dispatch plans by selected month via linked production order
   // Filter dispatch plans — only active orders (running/pending) + closed this month

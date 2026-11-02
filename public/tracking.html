@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v59H</title>
+<title>Sunloc Tracking Suite v1.0 · build v59L</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v59H</p>
+      <p>Tracking Suite v1.0 · build v59L</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v59H</p>
+      <p>Tracking Suite v1.0 · build v59L</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -750,7 +750,12 @@ const AVG_WT_STD_KG_PER_LAKH = { '00':12.5, '0':9.8, '1':7.9, '2':6.5, '3':5.2, 
 // v50F (Rahul Yadav, 2 Aug — SUPERSEDES the emailed table for two materials): 5 Ply and the HDCL
 // sheet vary box to box and sheet to sheet, so their allowance is raised from 2.000 to 2.400 kg.
 // 3 Ply is unchanged at 1.800 and its column of the original table still holds verbatim.
-const PACK_TARE_KG = { '3 Ply':1.8, '3 Ply with HDCL':2.4, '5 Ply':2.4 };
+// v59J (Shri Kant Gupta / Ishan, 31 Oct 2026): 3 Ply is discontinued; 5 Ply box types replace the set in Planning.
+// v59L (Ishan, 2 Nov 2026 — supersedes the v59J/v59K figures, which were never deployed): exactly THREE packing
+// options remain, each with its own measured tare — 5 Ply Box (Green) 1.500 kg, 5 Ply Box (Blue) 2.000 kg,
+// 5 Ply Box (Blue with HDCL) 2.500 kg. The old three names stay in the table so batches planned with them still weigh.
+const PACK_TARE_KG = { '3 Ply':1.8, '3 Ply with HDCL':2.4, '5 Ply':2.4,
+  '5 Ply Box (Green)':1.5, '5 Ply Box (Blue)':2.0, '5 Ply Box (Blue with HDCL)':2.5 };
 
 function _v50eStdAvgWt(size){
   const v = AVG_WT_STD_KG_PER_LAKH[String(size==null?'':size).trim()];
@@ -6051,6 +6056,7 @@ function renderDeptScan(dept){
         const _sOp  = s.operator||s.by||'';
         // v53K item 1 (re-applied from v53I): scrap-disposition per-box clears carry operator 'recon-scrap:%' (v50X) — badge them too.
         const _isRecon = String(_sLid).startsWith('recon-') || String(_sOp).startsWith('recon:') || String(_sOp).startsWith('recon-scrap:');
+        const _isDeem = String(_sOp).startsWith('deemed-pack:');   // v59L: packing-in deemed by an admin-regularised dispatch (real label)
         const lbl=_isRecon?null:state.labels.find(l=>l.id===_sLid);
         // Fallback: if label not in state, try matching by batch+labelNumber from scan, or show box from scan qty
         // v49ZJ (confirmed by Ishan): excess boxes show their LABEL NOMENCLATURE (E-1, E-2 …), not a
@@ -6062,7 +6068,7 @@ function renderDeptScan(dept){
         const _rsB=state.batches.find(b=>b.batchNumber===s.batchNumber)||{};
         return `<tr${_isRecon?' style="background:rgba(124,58,237,0.05)"':''}>
         <td class="td-mono text-sm">${fmtDateTime(s.ts)}${_isRecon?' <span style="font-size:9px;color:#7c3aed" title="Timestamp is the month-window end so this adjustment is attributed to the reconciled month — not a real scan time">(month-end)</span>':''}</td>
-        <td class="td-bold td-mono">${s.batchNumber}/${_isRecon?`<span class="badge" style="background:rgba(124,58,237,0.12);color:#7c3aed;border:1px solid rgba(124,58,237,0.35);font-size:9px" title="Synthetic movement created by admin WIP reconciliation — no physical box label">⚙ RECON</span>`:`<span style="color:var(--accent)">${boxNum}</span>`}</td>
+        <td class="td-bold td-mono">${s.batchNumber}/${_isRecon?`<span class="badge" style="background:rgba(124,58,237,0.12);color:#7c3aed;border:1px solid rgba(124,58,237,0.35);font-size:9px" title="Synthetic movement created by admin WIP reconciliation — no physical box label">⚙ RECON</span>`:`<span style="color:var(--accent)">${boxNum}</span>`}${_isDeem?` <span class="badge" style="background:rgba(8,145,178,0.12);color:#0891b2;border:1px solid rgba(8,145,178,0.35);font-size:9px" title="Packing IN deemed for this box by an admin-regularised / deemed dispatch (${_sOp}) — the box had cleared PI and left on an invoice without a packing scan">🧾 DEEMED</span>`:''}</td>
         <td class="text-sm">${_rsB.customer||'—'}</td>
         <td class="text-sm">${_rsB.colour||'—'}</td>
         <td class="text-sm">${_rsB.size!=null?_rsB.size:'—'}</td>
@@ -8422,6 +8428,25 @@ async function _v41_closeInvoiceAsLegacy(invoiceId) {
 // GET /api/invoice/over-invoiced (single server authority; the v49C badge and this table cannot
 // drift). Includes an Excel export styled like Report E's (v50W colour language).
 let _v51dOverInvRows = null, _v51dOverInvUnattr = null;
+// v59L (Aashish Saini / Ishan, 2 Nov 2026): admin backfill for regularised / deemed dispatches whose boxes were never
+// scanned into Packing — dry run → confirm → apply. The server does the per-label work (_v59lDeemPackIn).
+async function _v59lDeemPackBackfill() {
+  const since = prompt('Settle deemed dispatches: consider invoices dispatched on/after (YYYY-MM-DD)', '2026-10-01');
+  if (!since) return;
+  const batch = prompt('Limit to one batch? (leave blank for all)', '') || '';
+  const hdr = { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'x-sunloc-user': currentUser?.username || '' };
+  const call = async (apply) => { const r = await fetch(serverUrl + '/api/tracking/deem-pack-backfill', { method: 'POST', headers: hdr, body: JSON.stringify({ since, batch, apply: apply ? 1 : 0 }) }); return r.json(); };
+  let d; try { d = await call(false); } catch (e) { alert('Dry run failed: ' + e.message); return; }
+  if (!d || !d.ok) { alert('Dry run failed: ' + ((d && d.error) || 'unknown')); return; }
+  const rows = (d.rows || []).filter(r => r.deemed);
+  if (!rows.length) { alert(`Nothing to settle — ${d.invoices} deemed invoice(s) since ${since} checked; every box is already packed-in or no eligible box (live label past PI without a packing scan) exists.`); return; }
+  const lines = rows.map(r => `${r.batch} (inv ${r.invoice}): ${r.deemed} box(es) — ${r.atQty} at label qty, ${r.boxOnly} box-only · dispatched ${r.dispBoxes} bx / ${r.dispQty} L vs packed ${r.packedBoxes} bx / ${r.packedQty} L`);
+  if (!confirm(`DRY RUN — ${rows.length} batch(es), ${d.deemed} box(es) would be deemed packed-in:\n\n${lines.join('\n')}\n\nApply? Each row is written as a Packing IN on the box's own label, tagged DEEMED and audited.`)) return;
+  try { d = await call(true); } catch (e) { alert('Apply failed: ' + e.message); return; }
+  if (!d || !d.ok) { alert('Apply failed: ' + ((d && d.error) || 'unknown')); return; }
+  alert(`Done — ${d.deemed} box(es) deemed packed-in across ${(d.rows||[]).filter(r=>r.deemed).length} batch(es). Packed, WIP and Report F update on the next refresh.`);
+  try { if (typeof pullFromServer === 'function') pullFromServer(); } catch (_) {}
+}
 async function _v51dToggleOverInv() {
   window._giOverInv = !window._giOverInv;
   const btn = document.getElementById('v51d-overinv-toggle');
@@ -10966,6 +10991,7 @@ async function renderGeneratedInvoices() {
         <button class="btn btn-sm" style="background:#10b981;color:white;border:none" onclick="_v39_exportInvoicesCsv()">📥 Export Excel</button>
         <button id="v39-gi-realloc-toggle" class="btn btn-sm btn-secondary" onclick="_v44zjToggleNeedsRealloc()" title="Show only regularised invoices whose dispatch landed under a multi-batch (concatenated) key — these need re-allocation to drop from the truck plan.">⚠ Needs re-allocation</button>
         <button id="v51d-overinv-toggle" class="btn btn-sm btn-secondary" onclick="_v51dToggleOverInv()" title="Show every over-invoiced batch in one table: invoiced (received + pending) exceeds packed quantity — the v49C definition, consolidated.">🔺 Over-invoiced</button>
+        ${currentDept==='admin'?`<button class="btn btn-sm btn-secondary" onclick="_v59lDeemPackBackfill()" title="v59L: for invoices dispatched by regularise / deemed scan-out, record the packing IN those boxes imply (per real label, tagged DEEMED) — closes Packed = 0, phantom frozen WIP and the PI → Packing handover gap for boxes that physically left. Dry run first, then apply.">🧾 Settle deemed dispatches</button>`:''}
         <!-- v57Y: basis selector + Return & Cancel / Return Stock views -->
         <select id="v57y-gi-basis" class="form-control" style="width:auto;padding:5px 8px;font-size:12px;font-weight:600" onchange="_v57ySetBasis()" title="GROSS = every invoice SAP raised, cancelled ones included at full value. NET (production basis) = cancelled invoices removed and the quantity invoiced out of RETURN STOCK deducted in the month it is re-invoiced; credit notes are shown on their original invoice but not deducted. The KPI tiles and the export follow this choice.">
           <option value="gross" ${window._giBasis!=='net'?'selected':''}>Gross (all invoices)</option>
@@ -11027,6 +11053,14 @@ async function _v44zjReconcileMultibatch() {
 }
 
 async function _v39_applyInvoiceFilters() {
+  // v59L (Ishan, 2 Nov 2026 — 26N066 "filter doesn't hold"): the tab opens with an UNFILTERED request (5000 rows,
+  // include_allocs) that can take seconds; a batch typed meanwhile fires a small filtered request that returns
+  // first — then the slow unfiltered response lands and overwrites the list with all 1752 invoices while the
+  // Batch box still reads 26N066. Nothing checked whether a response was still the latest. Every request is now
+  // numbered and the previous one aborted; a response that is not the newest is dropped, errors included.
+  const _seq = window._giReqSeq = (window._giReqSeq || 0) + 1;
+  try { if (window._giAbort) window._giAbort.abort(); } catch (_) {}
+  const _ac = window._giAbort = new AbortController();
   const status   = document.getElementById('v39-gi-status')?.value || '';
   const batch    = document.getElementById('v39-gi-batch')?.value?.trim() || '';
   const customer = document.getElementById('v39-gi-customer')?.value?.trim() || '';
@@ -11066,8 +11100,10 @@ async function _v39_applyInvoiceFilters() {
     const _pm53d = document.getElementById('v39-gi-pm')?.value || '';
     if (_pm53d) params.set('prod_month', _pm53d);
     params.set('include_allocs', '1');   // v53H: per-batch grain rides along for exports
-    const r = await fetch(serverUrl + '/api/invoice/received?' + params.toString(), { signal: AbortSignal.timeout(10000) });
+    const _sig = (typeof AbortSignal.any === 'function') ? AbortSignal.any([_ac.signal, AbortSignal.timeout(10000)]) : _ac.signal;   // v59L
+    const r = await fetch(serverUrl + '/api/invoice/received?' + params.toString(), { signal: _sig });
     const j = await r.json();
+    if (_seq !== window._giReqSeq) return;   // v59L: a newer request has been issued — this response is stale
     // v51ZE fallback (only against a pre-v53D server that ignores prod_month): any-batch membership.
     if (_pm53d && j && j.ok && !j.pm_supported && Array.isArray(j.invoices)) {
       const _bm = {}; (state.batches||[]).forEach(b=>{ if(!b.deleted&&b.batchNumber) _bm[String(b.batchNumber).trim().toUpperCase()]=_v50bCohortMonth(b)||''; });
@@ -11100,6 +11136,7 @@ async function _v39_applyInvoiceFilters() {
       if (statusText) statusText.textContent = '';
     }
   } catch (e) {
+    if (_seq !== window._giReqSeq || (e && e.name === 'AbortError')) return;   // v59L: superseded — never paint its error
     document.getElementById('v39-gi-table').innerHTML = `<div style="padding:20px;text-align:center;color:var(--text3)">⚠️ Could not load invoices: ${e.message}</div>`;
     if (statusText) statusText.textContent = '';
   }
@@ -17296,10 +17333,25 @@ function _rptKProdMonthOpts(rows, sel) {
 //   renderReportG_Movement / exportReportG_Movement  == renderReportK / exportReportK
 //   renderReportG_Alerts                             == renderReportJ
 //   exportReportD_AGrade                             == exportReportG   (stale name; A-Grade lives in Report D)
-function renderReportK(targetId) {
+// v59L (Ishan, 2 Nov 2026 — Report G "typing a batch is letter by letter"): every keystroke in the three text
+// filters rebuilt the whole universe (≈6 passes over all scans PER batch) and re-wrote the entire card, input
+// boxes included, with no debounce — the browser was blocked for the full recompute per character. Now:
+//   • the UNFILTERED row universe is cached (keyed on period, data sizes and the period fetch) and rebuilt only
+//     when the data behind it changes;
+//   • the text inputs call _rptKTypeFilter → 200 ms debounce → renderReportK(id, {resultsOnly:true}), which
+//     re-renders ONLY the results table, the batch count and the "packed · not yet dispatched" chip — the inputs
+//     are never recreated, so focus and caret are untouched and typing is continuous while still filtering live.
+// Period / status / month controls still take the full render path.
+function _rptKTypeFilter(key, value, containerId){
+  window._reportKFilters[key] = value;
+  clearTimeout(window._rkTypeTimer);
+  window._rkTypeTimer = setTimeout(() => renderReportK(containerId, { resultsOnly: true }), 200);
+}
+function renderReportK(targetId, opts) {
   const containerId = targetId || 'report-k-container';
   const el = document.getElementById(containerId);
   if (!el) return;
+  const _resultsOnly = !!(opts && opts.resultsOnly) && !!document.getElementById('rptk-results') && !!document.getElementById('rptk-count');   // v59L
 
   const filters = window._reportKFilters;
   const dateMode = window._reportKDateRangeMode;
@@ -17346,160 +17398,168 @@ function renderReportK(targetId) {
   // v40 Phase 18.14: scan timestamp arrays still come from state.scans (used only for
   // drill-down + date detection). COUNTS used for status calc now come from scan-summary
   // (no limit) + Phase 18 dispatch records — see below.
-  const byBatch = {};   // batchNo → { packInScans: [], dispatchOutScans: [] }
-  state.scans.forEach(s => {
-    if (!s.ts || !s.batchNumber) return;
-    const bn = s.batchNumber;
-    if (!byBatch[bn]) byBatch[bn] = { packInScans: [], dispatchOutScans: [] };
-    if (s.dept === 'packing' && s.type === 'in') {
-      byBatch[bn].packInScans.push(s);
-    } else if (s.dept === 'dispatch' && s.type === 'out') {
-      byBatch[bn].dispatchOutScans.push(s);
-    }
-  });
-  // v40 P18.14: Also include batches that have scan-summary OR dispatch records but
-  // weren't seen in state.scans (because their per-scan rows were dropped past the limit
-  // in the old days, OR because they were dispatched via Phase 18 without per-box scans).
-  Object.keys(state.scanSummary || {}).forEach(bn => {
-    if (!byBatch[bn]) byBatch[bn] = { packInScans: [], dispatchOutScans: [] };
-  });
-  (state.dispatchRecs || []).forEach(r => {
-    if (r.batchNumber && !byBatch[r.batchNumber]) {
-      byBatch[r.batchNumber] = { packInScans: [], dispatchOutScans: [] };
-    }
-  });
+  // v59L: universe cache — see the note above renderReportK
+  const _rkUKey = _perKey48 + '|' + (_perData48 ? 1 : 0) + '|' + (state.scans||[]).length + '|' + ((state.dispatchRecs||state.dispatchRecords||[]).length) + '|' + Object.keys(state.scanSummary||{}).length + '|' + (state.batches||[]).length + '|' + today();
+  let rows;
+  if (window._rkUniverse && window._rkUniverse.key === _rkUKey) {
+    rows = window._rkUniverse.rows;
+  } else {
+    const byBatch = {};   // batchNo → { packInScans: [], dispatchOutScans: [] }
+    state.scans.forEach(s => {
+      if (!s.ts || !s.batchNumber) return;
+      const bn = s.batchNumber;
+      if (!byBatch[bn]) byBatch[bn] = { packInScans: [], dispatchOutScans: [] };
+      if (s.dept === 'packing' && s.type === 'in') {
+        byBatch[bn].packInScans.push(s);
+      } else if (s.dept === 'dispatch' && s.type === 'out') {
+        byBatch[bn].dispatchOutScans.push(s);
+      }
+    });
+    // v40 P18.14: Also include batches that have scan-summary OR dispatch records but
+    // weren't seen in state.scans (because their per-scan rows were dropped past the limit
+    // in the old days, OR because they were dispatched via Phase 18 without per-box scans).
+    Object.keys(state.scanSummary || {}).forEach(bn => {
+      if (!byBatch[bn]) byBatch[bn] = { packInScans: [], dispatchOutScans: [] };
+    });
+    (state.dispatchRecs || []).forEach(r => {
+      if (r.batchNumber && !byBatch[r.batchNumber]) {
+        byBatch[r.batchNumber] = { packInScans: [], dispatchOutScans: [] };
+      }
+    });
 
-  // Build per-batch summary rows
-  let rows = Object.entries(byBatch).map(([bn, d]) => {
-    const b = getBatch(bn);
-    const size = b?.size || '0';
-    // Sort scans by ts asc
-    d.packInScans.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
-    d.dispatchOutScans.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
-    let firstPackIn = _istDayKey(d.packInScans[0]?.ts) || null;
-    let lastPackIn = _istDayKey(d.packInScans[d.packInScans.length-1]?.ts) || null;
-    // v51ZF (Ishan): merge the FULL-HISTORY scan-summary dates (server MIN/MAX per batch/dept/type).
-    // state.scans is windowed (since 1st of prev month, capped 2000 newest), so a batch packed
-    // before the cap had firstPackIn=null → daysInInv=null → the stale_7d/15d status could never
-    // fire and both Stale toggles filtered to an unreachable status (empty table). min-merge, so a
-    // window-visible date can only be pulled EARLIER by the authoritative summary, never later.
-    const _sumB51zf = state.scanSummary?.[bn]?.packing || null;
-    { const _sf = _istDayKey(_sumB51zf?.inFirstTs) || null;
-      if (_sf && (!firstPackIn || _sf < firstPackIn)) firstPackIn = _sf;
-      const _sl = _istDayKey(_sumB51zf?.inLastTs) || null;
-      if (_sl && (!lastPackIn || _sl > lastPackIn)) lastPackIn = _sl; }
-    // v40 P18.14: include Phase 18 dispatch record timestamps too. lastDispOut should reflect
-    // the latest physical dispatch event, whether legacy scan-out OR Phase 18 truck dispatch.
-    const phase18TsList = (state.dispatchRecs || [])
-      .filter(r => r.batchNumber === bn)
-      .map(r => _istDayKey(r.ts))
-      .filter(Boolean);
-    const allDispTs = [
-      ...d.dispatchOutScans.map(s => _istDayKey(s.ts)).filter(Boolean),
-      ...phase18TsList
-    ].sort();
-    let firstDispOut = allDispTs[0] || null;
-    let lastDispOut = allDispTs[allDispTs.length - 1] || null;
-    // v51ZF: same full-history merge for dispatch-out (sibling of the pack-in fix above — the
-    // daysInInv formula consumes BOTH dates, so both must be window-independent; uniformity rule).
-    const _sumD51zf = state.scanSummary?.[bn]?.dispatch || null;
-    { const _df = _istDayKey(_sumD51zf?.outFirstTs) || null;
-      if (_df && (!firstDispOut || _df < firstDispOut)) firstDispOut = _df;
-      const _dl = _istDayKey(_sumD51zf?.outLastTs) || null;
-      if (_dl && (!lastDispOut || _dl > lastDispOut)) lastDispOut = _dl; }
-    // v40 P18.14: counts from scan-summary (no LIMIT) + combined-source helper for dispatch
-    const packInBoxes = hasScanSummary()
-      ? _ss(bn, 'packing').in + state.scans.filter(s=>s.batchNumber===bn&&s.dept==='packing'&&s.type==='in'&&s._local).length
-      : d.packInScans.length;
-    const dispOutBoxes = _v40_dispatchedBoxes(bn);
-    const packInQty = _scanLakhs(bn,'packing','in',size);   // v47G: per-box label sum (lifetime)
-    const dispOutQty = _v40_dispatchedLakhs(bn, size);      // v47G: per-box dispatch scans + Phase-18 records
-    // v45ZL item 3B (confirmed by Ishan, option B): PERIOD-WINDOWED pack-in — counts the pack-in
-    // SCAN EVENTS that physically happened inside [fromDate,toDate], from the SAME source the
-    // Packing ledger uses (state.scans, dept=packing/type=in). This reconciles box-for-box with the
-    // Packing ledger for the same period+customer (e.g. alkem 01–05 Jul → 33), unlike the LIFETIME
-    // packInBoxes above (which stays authoritative for the balance/aging math: a June-packed batch
-    // still dispatching in July must keep its full pack-in). Same state.scans window limitation as
-    // the Packing ledger, so the two move together by construction.
-    // v47W (Ishan #3): once a batch's full scan history is loaded (on drill-down expand), use it for the
-    // period window too, so "Pack In (Period)" agrees with the now-complete drill-down list. Batches not yet
-    // expanded keep the windowed state.scans approximation.
-    // v48 (Ishan #3): PERIOD pack-in + dispatch-out from the server aggregation (full data → correct on
-    // first view). 'all' mode = lifetime. DISP OUT is shown PERIOD-scoped for a date range (fixes the
-    // 52,150 L); the status/balance math below still uses the LIFETIME dispOutBoxes/Qty, so batch state
-    // (closed/partial/stale) is unchanged.
-    const _pd48 = _perData48 ? (_perData48[bn] || {packInBoxes:0,packInQty:0,dispOutBoxes:0,dispOutQty:0}) : null;
-    const packInWindowBoxes = _isAllDates48 ? packInBoxes : (_pd48 ? Math.round(_pd48.packInBoxes) : 0);
-    const packInWindowQty   = _isAllDates48 ? packInQty   : (_pd48 ? _pd48.packInQty   : 0);
-    const dispOutShownBoxes = _isAllDates48 ? dispOutBoxes : (_pd48 ? Math.round(_pd48.dispOutBoxes) : 0);
-    const dispOutShownQty   = _isAllDates48 ? dispOutQty   : (_pd48 ? _pd48.dispOutQty   : 0);
-    // Days in inventory: lastDispOut − firstPackIn (if both exist)
-    let daysInInv = null;
-    if (firstPackIn && lastDispOut) {
-      daysInInv = Math.max(0, Math.floor((new Date(lastDispOut) - new Date(firstPackIn)) / 86400000));
-    } else if (firstPackIn && !lastDispOut) {
-      // Still in inventory — days since first pack in
-      daysInInv = Math.max(0, Math.floor((new Date(today()) - new Date(firstPackIn)) / 86400000));
-    }
-    // Status
-    let status, statusColor;
-    if (packInBoxes === 0 && dispOutBoxes === 0) {
-      status = 'no_activity'; statusColor = 'var(--text3)';
-    } else if (dispOutBoxes >= packInBoxes && packInBoxes > 0) {
-      status = 'closed'; statusColor = '#10b981';
-    } else if (dispOutBoxes > 0 && dispOutBoxes < packInBoxes) {
-      status = 'partial'; statusColor = '#f59e0b';
-    } else if (packInBoxes > 0 && dispOutBoxes === 0 && daysInInv > 15) {
-      status = 'stale_15d'; statusColor = '#dc2626';
-    } else if (packInBoxes > 0 && dispOutBoxes === 0 && daysInInv > 7) {
-      status = 'stale_7d'; statusColor = '#f59e0b';
-    } else {
-      status = 'in_progress'; statusColor = '#0891b2';
-    }
-    return {
-      batchNo: bn,
-      // v52H (Ishan, 20 Aug): production month, SAME rule as the Generated Invoices / Over Invoiced
-      // tabs — first DPR production date (server-injected dprFirstDate = MIN(production_actuals.date)),
-      // falling back to the production order's planned start date when the batch has no DPR rows yet.
-      // Batches resolving to neither carry '' and are simply absent from the dropdown, as there.
-      // v52K (Ishan, 21 Aug): attribution switched to _v50bCohortMonth — the SAME cohort rule Report D
-      // (getTrkMonthBatches) uses — so month-scoped G and D contain the SAME batch set by construction.
-      // For every batch with DPR production and no manual start date this is a NO-OP: the server's v51W
-      // anchor already serves startDate = first DPR date, so the v52H rule and the cohort rule agree.
-      // The rules only diverged at the edges, and each now follows D: a MANUAL start date is planner-
-      // authoritative (5 Aug rule) and buckets by its manual month, not the DPR month; dateless batches
-      // get the cohort fallbacks (planning month → first scan) instead of dropping out of the dropdown;
-      // and pre-July batches absorbed into July by _v50C appear under July here exactly as in D. Ghost
-      // rows (scans but no batch object) take the first-scan leg directly — the same fallback cohort
-      // attribution ends on.
-      prodMonth: b ? (_v50bCohortMonth(b) || '') : (_v50bFirstScanMonth(bn) || ''),
-      customer: b?.customer || '-',
-      zone: b?.zone || '',   // v53Z
-      pcCode: b?.pcCode || '-',
-      size: size,
-      colour: b?.colour || '-',
-      firstPackIn, lastPackIn,
-      firstDispOut, lastDispOut,
-      packInBoxes, packInQty,
-      packInWindowBoxes, packInWindowQty,
-      dispOutBoxes, dispOutQty, dispOutShownBoxes, dispOutShownQty,
-      daysInInv,
-      balanceQty: packInQty - dispOutQty,
-      status, statusColor,
-      _detail: d,  // retained for drill-down
-    };
-  });
+    // Build per-batch summary rows
+    rows = Object.entries(byBatch).map(([bn, d]) => {
+      const b = getBatch(bn);
+      const size = b?.size || '0';
+      // Sort scans by ts asc
+      d.packInScans.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
+      d.dispatchOutScans.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
+      let firstPackIn = _istDayKey(d.packInScans[0]?.ts) || null;
+      let lastPackIn = _istDayKey(d.packInScans[d.packInScans.length-1]?.ts) || null;
+      // v51ZF (Ishan): merge the FULL-HISTORY scan-summary dates (server MIN/MAX per batch/dept/type).
+      // state.scans is windowed (since 1st of prev month, capped 2000 newest), so a batch packed
+      // before the cap had firstPackIn=null → daysInInv=null → the stale_7d/15d status could never
+      // fire and both Stale toggles filtered to an unreachable status (empty table). min-merge, so a
+      // window-visible date can only be pulled EARLIER by the authoritative summary, never later.
+      const _sumB51zf = state.scanSummary?.[bn]?.packing || null;
+      { const _sf = _istDayKey(_sumB51zf?.inFirstTs) || null;
+        if (_sf && (!firstPackIn || _sf < firstPackIn)) firstPackIn = _sf;
+        const _sl = _istDayKey(_sumB51zf?.inLastTs) || null;
+        if (_sl && (!lastPackIn || _sl > lastPackIn)) lastPackIn = _sl; }
+      // v40 P18.14: include Phase 18 dispatch record timestamps too. lastDispOut should reflect
+      // the latest physical dispatch event, whether legacy scan-out OR Phase 18 truck dispatch.
+      const phase18TsList = (state.dispatchRecs || [])
+        .filter(r => r.batchNumber === bn)
+        .map(r => _istDayKey(r.ts))
+        .filter(Boolean);
+      const allDispTs = [
+        ...d.dispatchOutScans.map(s => _istDayKey(s.ts)).filter(Boolean),
+        ...phase18TsList
+      ].sort();
+      let firstDispOut = allDispTs[0] || null;
+      let lastDispOut = allDispTs[allDispTs.length - 1] || null;
+      // v51ZF: same full-history merge for dispatch-out (sibling of the pack-in fix above — the
+      // daysInInv formula consumes BOTH dates, so both must be window-independent; uniformity rule).
+      const _sumD51zf = state.scanSummary?.[bn]?.dispatch || null;
+      { const _df = _istDayKey(_sumD51zf?.outFirstTs) || null;
+        if (_df && (!firstDispOut || _df < firstDispOut)) firstDispOut = _df;
+        const _dl = _istDayKey(_sumD51zf?.outLastTs) || null;
+        if (_dl && (!lastDispOut || _dl > lastDispOut)) lastDispOut = _dl; }
+      // v40 P18.14: counts from scan-summary (no LIMIT) + combined-source helper for dispatch
+      const packInBoxes = hasScanSummary()
+        ? _ss(bn, 'packing').in + state.scans.filter(s=>s.batchNumber===bn&&s.dept==='packing'&&s.type==='in'&&s._local).length
+        : d.packInScans.length;
+      const dispOutBoxes = _v40_dispatchedBoxes(bn);
+      const packInQty = _scanLakhs(bn,'packing','in',size);   // v47G: per-box label sum (lifetime)
+      const dispOutQty = _v40_dispatchedLakhs(bn, size);      // v47G: per-box dispatch scans + Phase-18 records
+      // v45ZL item 3B (confirmed by Ishan, option B): PERIOD-WINDOWED pack-in — counts the pack-in
+      // SCAN EVENTS that physically happened inside [fromDate,toDate], from the SAME source the
+      // Packing ledger uses (state.scans, dept=packing/type=in). This reconciles box-for-box with the
+      // Packing ledger for the same period+customer (e.g. alkem 01–05 Jul → 33), unlike the LIFETIME
+      // packInBoxes above (which stays authoritative for the balance/aging math: a June-packed batch
+      // still dispatching in July must keep its full pack-in). Same state.scans window limitation as
+      // the Packing ledger, so the two move together by construction.
+      // v47W (Ishan #3): once a batch's full scan history is loaded (on drill-down expand), use it for the
+      // period window too, so "Pack In (Period)" agrees with the now-complete drill-down list. Batches not yet
+      // expanded keep the windowed state.scans approximation.
+      // v48 (Ishan #3): PERIOD pack-in + dispatch-out from the server aggregation (full data → correct on
+      // first view). 'all' mode = lifetime. DISP OUT is shown PERIOD-scoped for a date range (fixes the
+      // 52,150 L); the status/balance math below still uses the LIFETIME dispOutBoxes/Qty, so batch state
+      // (closed/partial/stale) is unchanged.
+      const _pd48 = _perData48 ? (_perData48[bn] || {packInBoxes:0,packInQty:0,dispOutBoxes:0,dispOutQty:0}) : null;
+      const packInWindowBoxes = _isAllDates48 ? packInBoxes : (_pd48 ? Math.round(_pd48.packInBoxes) : 0);
+      const packInWindowQty   = _isAllDates48 ? packInQty   : (_pd48 ? _pd48.packInQty   : 0);
+      const dispOutShownBoxes = _isAllDates48 ? dispOutBoxes : (_pd48 ? Math.round(_pd48.dispOutBoxes) : 0);
+      const dispOutShownQty   = _isAllDates48 ? dispOutQty   : (_pd48 ? _pd48.dispOutQty   : 0);
+      // Days in inventory: lastDispOut − firstPackIn (if both exist)
+      let daysInInv = null;
+      if (firstPackIn && lastDispOut) {
+        daysInInv = Math.max(0, Math.floor((new Date(lastDispOut) - new Date(firstPackIn)) / 86400000));
+      } else if (firstPackIn && !lastDispOut) {
+        // Still in inventory — days since first pack in
+        daysInInv = Math.max(0, Math.floor((new Date(today()) - new Date(firstPackIn)) / 86400000));
+      }
+      // Status
+      let status, statusColor;
+      if (packInBoxes === 0 && dispOutBoxes === 0) {
+        status = 'no_activity'; statusColor = 'var(--text3)';
+      } else if (dispOutBoxes >= packInBoxes && packInBoxes > 0) {
+        status = 'closed'; statusColor = '#10b981';
+      } else if (dispOutBoxes > 0 && dispOutBoxes < packInBoxes) {
+        status = 'partial'; statusColor = '#f59e0b';
+      } else if (packInBoxes > 0 && dispOutBoxes === 0 && daysInInv > 15) {
+        status = 'stale_15d'; statusColor = '#dc2626';
+      } else if (packInBoxes > 0 && dispOutBoxes === 0 && daysInInv > 7) {
+        status = 'stale_7d'; statusColor = '#f59e0b';
+      } else {
+        status = 'in_progress'; statusColor = '#0891b2';
+      }
+      return {
+        batchNo: bn,
+        // v52H (Ishan, 20 Aug): production month, SAME rule as the Generated Invoices / Over Invoiced
+        // tabs — first DPR production date (server-injected dprFirstDate = MIN(production_actuals.date)),
+        // falling back to the production order's planned start date when the batch has no DPR rows yet.
+        // Batches resolving to neither carry '' and are simply absent from the dropdown, as there.
+        // v52K (Ishan, 21 Aug): attribution switched to _v50bCohortMonth — the SAME cohort rule Report D
+        // (getTrkMonthBatches) uses — so month-scoped G and D contain the SAME batch set by construction.
+        // For every batch with DPR production and no manual start date this is a NO-OP: the server's v51W
+        // anchor already serves startDate = first DPR date, so the v52H rule and the cohort rule agree.
+        // The rules only diverged at the edges, and each now follows D: a MANUAL start date is planner-
+        // authoritative (5 Aug rule) and buckets by its manual month, not the DPR month; dateless batches
+        // get the cohort fallbacks (planning month → first scan) instead of dropping out of the dropdown;
+        // and pre-July batches absorbed into July by _v50C appear under July here exactly as in D. Ghost
+        // rows (scans but no batch object) take the first-scan leg directly — the same fallback cohort
+        // attribution ends on.
+        prodMonth: b ? (_v50bCohortMonth(b) || '') : (_v50bFirstScanMonth(bn) || ''),
+        customer: b?.customer || '-',
+        zone: b?.zone || '',   // v53Z
+        pcCode: b?.pcCode || '-',
+        size: size,
+        colour: b?.colour || '-',
+        firstPackIn, lastPackIn,
+        firstDispOut, lastDispOut,
+        packInBoxes, packInQty,
+        packInWindowBoxes, packInWindowQty,
+        dispOutBoxes, dispOutQty, dispOutShownBoxes, dispOutShownQty,
+        daysInInv,
+        balanceQty: packInQty - dispOutQty,
+        status, statusColor,
+        _detail: d,  // retained for drill-down
+      };
+    });
 
-  // v48F (Ishan): exclude batches that were NEVER packed in (zero LIFETIME pack-in) from the pack-in↔
-  // dispatch reconciliation. These carry a dispatch record but no pack-in — phantom/legacy/corrupt rows
-  // (e.g. 25T113's impossible 5200 L, uncorrected export capsule counts, pre-system dispatches) with
-  // nothing to reconcile against; they only dragged the balance negative and showed as 0-box leak rows.
-  // Display-only — no data is deleted, and batches with any real pack-in are untouched.
-  rows = rows.filter(r => (r.packInBoxes > 0 || r.packInQty > 0.005));
-  // v52H: month-dropdown universe — snapshot BEFORE any user filter, so the offered months stay
-  // stable whatever is selected. (Building the options from the filtered rows would collapse the
-  // list to the chosen month and strand the user there.) Same role as _v51dOverInvRows on the
-  // Over Invoiced tab, which likewise feeds _pmOpts from the unfiltered master list.
+    // v48F (Ishan): exclude batches that were NEVER packed in (zero LIFETIME pack-in) from the pack-in↔
+    // dispatch reconciliation. These carry a dispatch record but no pack-in — phantom/legacy/corrupt rows
+    // (e.g. 25T113's impossible 5200 L, uncorrected export capsule counts, pre-system dispatches) with
+    // nothing to reconcile against; they only dragged the balance negative and showed as 0-box leak rows.
+    // Display-only — no data is deleted, and batches with any real pack-in are untouched.
+    rows = rows.filter(r => (r.packInBoxes > 0 || r.packInQty > 0.005));
+    // v52H: month-dropdown universe — snapshot BEFORE any user filter, so the offered months stay
+    // stable whatever is selected. (Building the options from the filtered rows would collapse the
+    // list to the chosen month and strand the user there.) Same role as _v51dOverInvRows on the
+    // Over Invoiced tab, which likewise feeds _pmOpts from the unfiltered master list.
+    window._rkUniverse = { key: _rkUKey, rows };
+  }
   const _rptKMonthUniverse = rows;
 
   // Apply date filter to Dispatch Out date (so "dispatched this period")
@@ -17577,67 +17637,8 @@ function renderReportK(targetId) {
   // (screen = Excel by construction), instead of the old parallel windowed re-derivation.
   window._v48ReportKRows = rows; window._v48ReportKIsAll = _isAllDates48;
 
-  // Date selector + quick filters
-  const quickBtn = (mode, label) =>
-    `<button class="btn btn-sm" style="background:${dateMode===mode?'#0891b2':'var(--surface2)'};color:${dateMode===mode?'#fff':'var(--text)'};font-weight:600;font-size:11px;padding:4px 10px" onclick="window._reportKDateRangeMode='${mode}';window._reportKExpandedBatch=null;renderReportK('${containerId}')">${label}</button>`;
-
-  // Status filter pills
-  const statusPill = (val, label, color) =>
-    `<button class="btn btn-sm" style="background:${filters.status===val?color:'var(--surface2)'};color:${filters.status===val?'#fff':'var(--text)'};font-weight:600;font-size:10px;padding:3px 8px;border:1px solid ${color}" onclick="window._reportKFilters.status='${filters.status===val?'':val}';renderReportK('${containerId}')">${label}</button>`;
-
-  // v41ZB: preserve focus + caret of inner filter inputs across the per-keystroke re-render.
-  const _afK = document.activeElement;
-  const _afKId = _afK && _afK.id;
-  const _selKS = _afK && _afK.selectionStart, _selKE = _afK && _afK.selectionEnd;
-
-  el.innerHTML = `
-    <div class="card mb-16" style="border-top:4px solid #0891b2">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
-        <div class="card-title" style="margin-bottom:0">📅 Per-Batch Pack In → Dispatch Out Summary${_perLoading48?' <span style="font-size:11px;font-weight:400;color:var(--accent3)">⏳ loading period…</span>':''}
-          <span style="margin-left:10px;font-size:11px;font-weight:700;color:#0891b2;background:rgba(8,145,178,0.1);border:1px solid rgba(8,145,178,0.25);padding:3px 8px;border-radius:4px" title="Σ max(0, packed-in − dispatched) per batch — identical formula, sources and per-batch floor as Report D's Packed & Awaiting Dispatch total. With a production month selected, this equals Report D's figure for the same month.">📦 Packed · not yet dispatched: ${fmt(totalPackedNotDisp52k)} L</span></div>
-        <button class="btn btn-secondary btn-sm" onclick="exportReportK()">📥 Export Excel</button>
-      </div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;align-items:center">
-        <span style="font-size:11px;color:var(--text-muted);margin-right:4px">Period:</span>
-        ${quickBtn('7d', 'Last 7d')}
-        ${quickBtn('15d', 'Last 15d')}
-        ${quickBtn('30d', 'Last 30d')}
-        ${quickBtn('all', 'All time')}
-        ${quickBtn('single', 'Specific Date')}
-        ${quickBtn('range', 'Date Range')}
-        ${dateMode === 'single' ? `<input type="date" value="${selectedDate}" max="${today()}" onchange="window._reportKDate=this.value;renderReportK('${containerId}')" style="border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:12px;margin-left:8px">`
-          : dateMode === 'range' ? `<span style="font-size:11px;color:var(--text-muted);margin-left:8px">From</span>
-             <input type="date" value="${fromDate}" max="${today()}" onchange="window._reportKFrom=this.value;renderReportK('${containerId}')" style="border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:12px">
-             <span style="font-size:11px;color:var(--text-muted)">To</span>
-             <input type="date" value="${toDate}" max="${today()}" onchange="window._reportKTo=this.value;renderReportK('${containerId}')" style="border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:12px">`
-          : (dateMode !== 'all' ? `<span style="font-size:11px;color:var(--text-muted);margin-left:8px">${fromDate} → ${toDate}</span>` : '')}
-      </div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;align-items:center">
-        <span style="font-size:11px;color:var(--text-muted);margin-right:4px">Status:</span>
-        ${statusPill('closed', '✓ Closed', '#10b981')}
-        ${statusPill('partial', '⏳ Partial', '#f59e0b')}
-        ${statusPill('in_progress', '🔄 In Progress', '#0891b2')}
-        ${statusPill('stale_7d', '⚠ Stale 7d+', '#f59e0b')}
-        ${statusPill('stale_15d', '🚨 Stale 15d+', '#dc2626')}
-      </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;padding:8px;background:var(--surface2);border-radius:4px">
-        <select id="rptk-filter-prodmonth" onchange="window._reportKFilters.prodMonth=this.value;if(this.value){window._reportKDateRangeMode='all';}renderReportK('${containerId}')"
-                style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;font-size:12px;font-weight:600" title="Production month — same cohort rule as Report D (start date, anchored to first DPR production where it exists). Picking a month sets the period to All time so the month's full packed position shows; narrow with the period buttons if needed.">
-          <option value="">All prod. months</option>
-          <option value="__stock__" ${filters.prodMonth==='__stock__'?'selected':''}>📦 Stock List (FG as on date, Jul'26 →)</option>${_rptKProdMonthOpts(_rptKMonthUniverse, filters.prodMonth)}
-        </select>
-        <input type="text" id="rptk-filter-customer" placeholder="🔍 Customer" value="${filters.customer||''}"
-               oninput="window._reportKFilters.customer=this.value;renderReportK('${containerId}')"
-               style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;min-width:140px;font-size:12px">
-        <input type="text" id="rptk-filter-batch" placeholder="🔍 Batch" value="${filters.batch||''}"
-               oninput="window._reportKFilters.batch=this.value;renderReportK('${containerId}')"
-               style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;min-width:140px;font-size:12px">
-        <input type="text" id="rptk-filter-pccode" placeholder="🔍 PC Code" value="${filters.pcCode||''}"
-               oninput="window._reportKFilters.pcCode=this.value;renderReportK('${containerId}')"
-               style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;min-width:120px;font-size:12px">
-        <button class="btn btn-ghost btn-sm" onclick="window._reportKFilters={customer:'',batch:'',pcCode:'',status:'',prodMonth:''};renderReportK('${containerId}')">✕ Clear all filters</button>
-        <span style="margin-left:auto;font-size:11px;color:var(--text-muted);align-self:center">${rows.length} batch${rows.length!==1?'es':''}</span>
-      </div>
+  // v59L: the results block is rendered once here and reused by both the full render and the results-only path
+  const _rptKResultsHtml = `
       ${_stockMode52l ? _v52lStockTableHtml(rows) : `
       <div class="tbl-wrap" style="max-height:600px;overflow-y:auto"><table>
         <thead><tr>
@@ -17693,17 +17694,86 @@ function renderReportK(targetId) {
           <td></td>
         </tr></tfoot>` : ''}
       </table></div>
-      <div class="text-sm text-muted mt-8" style="font-size:11px">💡 Click a batch row to drill down to date-wise scan-by-scan movement.  Status: Closed = Pack In ≤ Dispatch Out · Partial = some packed-in not yet dispatched · In Progress = pack-in active · Stale = packed but not dispatched after 7/15 days (matches Report J alert thresholds).</div>`}
+      <div class="text-sm text-muted mt-8" style="font-size:11px">💡 Click a batch row to drill down to date-wise scan-by-scan movement.  Status: Closed = Pack In ≤ Dispatch Out · Partial = some packed-in not yet dispatched · In Progress = pack-in active · Stale = packed but not dispatched after 7/15 days (matches Report J alert thresholds).</div>`}`;
+  if (_resultsOnly) {
+    document.getElementById('rptk-results').innerHTML = _rptKResultsHtml;
+    const _c = document.getElementById('rptk-count'); if (_c) _c.textContent = rows.length + ' batch' + (rows.length !== 1 ? 'es' : '');
+    const _p = document.getElementById('rptk-pnd'); if (_p) _p.textContent = fmt(totalPackedNotDisp52k);
+    return;
+  }
+
+  // Date selector + quick filters
+  const quickBtn = (mode, label) =>
+    `<button class="btn btn-sm" style="background:${dateMode===mode?'#0891b2':'var(--surface2)'};color:${dateMode===mode?'#fff':'var(--text)'};font-weight:600;font-size:11px;padding:4px 10px" onclick="window._reportKDateRangeMode='${mode}';window._reportKExpandedBatch=null;renderReportK('${containerId}')">${label}</button>`;
+
+  // Status filter pills
+  const statusPill = (val, label, color) =>
+    `<button class="btn btn-sm" style="background:${filters.status===val?color:'var(--surface2)'};color:${filters.status===val?'#fff':'var(--text)'};font-weight:600;font-size:10px;padding:3px 8px;border:1px solid ${color}" onclick="window._reportKFilters.status='${filters.status===val?'':val}';renderReportK('${containerId}')">${label}</button>`;
+
+  // v41ZB: preserve focus + caret of inner filter inputs across the per-keystroke re-render.
+  const _afK = document.activeElement;
+  const _afKId = _afK && _afK.id;
+  const _selKS = _afK && _afK.selectionStart, _selKE = _afK && _afK.selectionEnd;
+
+  el.innerHTML = `
+    <div class="card mb-16" style="border-top:4px solid #0891b2">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+        <div class="card-title" style="margin-bottom:0">📅 Per-Batch Pack In → Dispatch Out Summary${_perLoading48?' <span style="font-size:11px;font-weight:400;color:var(--accent3)">⏳ loading period…</span>':''}
+          <span style="margin-left:10px;font-size:11px;font-weight:700;color:#0891b2;background:rgba(8,145,178,0.1);border:1px solid rgba(8,145,178,0.25);padding:3px 8px;border-radius:4px" title="Σ max(0, packed-in − dispatched) per batch — identical formula, sources and per-batch floor as Report D's Packed & Awaiting Dispatch total. With a production month selected, this equals Report D's figure for the same month.">📦 Packed · not yet dispatched: <span id="rptk-pnd">${fmt(totalPackedNotDisp52k)}</span> L</span></div>
+        <button class="btn btn-secondary btn-sm" onclick="exportReportK()">📥 Export Excel</button>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;align-items:center">
+        <span style="font-size:11px;color:var(--text-muted);margin-right:4px">Period:</span>
+        ${quickBtn('7d', 'Last 7d')}
+        ${quickBtn('15d', 'Last 15d')}
+        ${quickBtn('30d', 'Last 30d')}
+        ${quickBtn('all', 'All time')}
+        ${quickBtn('single', 'Specific Date')}
+        ${quickBtn('range', 'Date Range')}
+        ${dateMode === 'single' ? `<input type="date" value="${selectedDate}" max="${today()}" onchange="window._reportKDate=this.value;renderReportK('${containerId}')" style="border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:12px;margin-left:8px">`
+          : dateMode === 'range' ? `<span style="font-size:11px;color:var(--text-muted);margin-left:8px">From</span>
+             <input type="date" value="${fromDate}" max="${today()}" onchange="window._reportKFrom=this.value;renderReportK('${containerId}')" style="border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:12px">
+             <span style="font-size:11px;color:var(--text-muted)">To</span>
+             <input type="date" value="${toDate}" max="${today()}" onchange="window._reportKTo=this.value;renderReportK('${containerId}')" style="border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:12px">`
+          : (dateMode !== 'all' ? `<span style="font-size:11px;color:var(--text-muted);margin-left:8px">${fromDate} → ${toDate}</span>` : '')}
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;align-items:center">
+        <span style="font-size:11px;color:var(--text-muted);margin-right:4px">Status:</span>
+        ${statusPill('closed', '✓ Closed', '#10b981')}
+        ${statusPill('partial', '⏳ Partial', '#f59e0b')}
+        ${statusPill('in_progress', '🔄 In Progress', '#0891b2')}
+        ${statusPill('stale_7d', '⚠ Stale 7d+', '#f59e0b')}
+        ${statusPill('stale_15d', '🚨 Stale 15d+', '#dc2626')}
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;padding:8px;background:var(--surface2);border-radius:4px">
+        <select id="rptk-filter-prodmonth" onchange="window._reportKFilters.prodMonth=this.value;if(this.value){window._reportKDateRangeMode='all';}renderReportK('${containerId}')"
+                style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;font-size:12px;font-weight:600" title="Production month — same cohort rule as Report D (start date, anchored to first DPR production where it exists). Picking a month sets the period to All time so the month's full packed position shows; narrow with the period buttons if needed.">
+          <option value="">All prod. months</option>
+          <option value="__stock__" ${filters.prodMonth==='__stock__'?'selected':''}>📦 Stock List (FG as on date, Jul'26 →)</option>${_rptKProdMonthOpts(_rptKMonthUniverse, filters.prodMonth)}
+        </select>
+        <input type="text" id="rptk-filter-customer" placeholder="🔍 Customer" value="${filters.customer||''}"
+               oninput="_rptKTypeFilter('customer',this.value,'${containerId}')"
+               style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;min-width:140px;font-size:12px">
+        <input type="text" id="rptk-filter-batch" placeholder="🔍 Batch" value="${filters.batch||''}"
+               oninput="_rptKTypeFilter('batch',this.value,'${containerId}')"
+               style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;min-width:140px;font-size:12px">
+        <input type="text" id="rptk-filter-pccode" placeholder="🔍 PC Code" value="${filters.pcCode||''}"
+               oninput="_rptKTypeFilter('pcCode',this.value,'${containerId}')"
+               style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;min-width:120px;font-size:12px">
+        <button class="btn btn-ghost btn-sm" onclick="window._reportKFilters={customer:'',batch:'',pcCode:'',status:'',prodMonth:''};renderReportK('${containerId}')">✕ Clear all filters</button>
+        <span id="rptk-count" style="margin-left:auto;font-size:11px;color:var(--text-muted);align-self:center">${rows.length} batch${rows.length!==1?'es':''}</span>
+      </div>
+      <div id="rptk-results">${_rptKResultsHtml}</div>
     </div>`;
   // v41ZB: restore focus + caret so the inner filter inputs can be typed without interruption.
-  if (_afKId) {
+  if (!_resultsOnly && _afKId) {
     const n = document.getElementById(_afKId);
     if (n) { n.focus(); try { if (_selKS != null) n.setSelectionRange(_selKS, _selKE); } catch(e){} }
   }
   // v41ZF: when K's movement view is shown as part of the merged Report G (renders into
   // report-output, not the dispatch page's report-k-container), keep the G view toggle pinned on top
   // across K's internal filter/date re-renders.
-  if (containerId === 'report-output' && (window._v41_reportGView || 'movement') === 'movement' && typeof _v41_reportGToggleHtml === 'function') {
+  if (!_resultsOnly && containerId === 'report-output' && (window._v41_reportGView || 'movement') === 'movement' && typeof _v41_reportGToggleHtml === 'function') {
     el.insertAdjacentHTML('afterbegin', _v41_reportGToggleHtml());
   }
 }
@@ -19970,6 +20040,7 @@ async function refreshScans(){
       const _sLid = s.labelId||s.label_id||'';
       const _sOp  = s.operator||s.by||'';
       const _isRecon = String(_sLid).startsWith('recon-') || String(_sOp).startsWith('recon:') || String(_sOp).startsWith('recon-scrap:');
+        const _isDeem = String(_sOp).startsWith('deemed-pack:');   // v59L: packing-in deemed by an admin-regularised dispatch (real label)
       const lbl=_isRecon?null:state.labels.find(l=>l.id===_sLid);
       // v51F (Rahul, 26ZE123 E-3/E-4): the LIVE refresh never got the v49ZJ fix — Math.abs stripped
       // the E-series convention (excess labels store negative labelNumbers), so E-4 rendered as 4.
@@ -19978,7 +20049,7 @@ async function refreshScans(){
       const _rsB=state.batches.find(b=>b.batchNumber===s.batchNumber)||{}; // v45T #2.3
       return `<tr${_isRecon?' style="background:rgba(124,58,237,0.05)"':''}>
         <td class="td-mono text-sm">${fmtDateTime(s.ts)}${_isRecon?' <span style="font-size:9px;color:#7c3aed" title="Timestamp is the month-window end so this adjustment is attributed to the reconciled month — not a real scan time">(month-end)</span>':''}</td>
-        <td class="td-bold td-mono">${s.batchNumber}/${_isRecon?`<span class="badge" style="background:rgba(124,58,237,0.12);color:#7c3aed;border:1px solid rgba(124,58,237,0.35);font-size:9px" title="Synthetic movement created by admin WIP reconciliation — no physical box label">⚙ RECON</span>`:`<span style="color:var(--accent)">${boxNum}</span>`}</td>
+        <td class="td-bold td-mono">${s.batchNumber}/${_isRecon?`<span class="badge" style="background:rgba(124,58,237,0.12);color:#7c3aed;border:1px solid rgba(124,58,237,0.35);font-size:9px" title="Synthetic movement created by admin WIP reconciliation — no physical box label">⚙ RECON</span>`:`<span style="color:var(--accent)">${boxNum}</span>`}${_isDeem?` <span class="badge" style="background:rgba(8,145,178,0.12);color:#0891b2;border:1px solid rgba(8,145,178,0.35);font-size:9px" title="Packing IN deemed for this box by an admin-regularised / deemed dispatch (${_sOp}) — the box had cleared PI and left on an invoice without a packing scan">🧾 DEEMED</span>`:''}</td>
         <td class="text-sm">${_rsB.customer||'—'}</td>
         <td class="text-sm">${_rsB.colour||'—'}</td>
         <td class="text-sm">${_rsB.size!=null?_rsB.size:'—'}</td>

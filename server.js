@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v59H';
+const APP_BUILD = 'v59L';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -240,6 +240,7 @@ function _v47gPackCaseSql(s) {
 function _v47gScanQtySql(s, l) {
   return `CASE WHEN ${s}.operator LIKE 'recon-scrap:%' THEN 0 `
        + `WHEN ${s}.label_id LIKE 'recon-%' THEN COALESCE(${s}.qty,0) `
+       + `WHEN ${s}.operator LIKE 'deemed-pack:%' AND ${s}.qty IS NOT NULL THEN ${s}.qty `   /* v59L: box-only deemed packing-in carries qty 0 (quantity already on a reconciliation entry) */
        + `WHEN ${l}.original_qty IS NOT NULL AND ${l}.regenerated_at IS NOT NULL AND ${s}.ts < ${l}.regenerated_at THEN ${l}.original_qty `
        + `ELSE COALESCE(${l}.qty, ${_v47gPackCaseSql(s)}) END`;
 }
@@ -10560,10 +10561,36 @@ async function _v46k_loadSplitFamilies() {
       else { const ph = _allKids.map(() => '?').join(','); lr = db.prepare(`SELECT batch_number, COALESCE(SUM(qty),0) AS q FROM tracking_labels WHERE batch_number IN (${ph}) AND COALESCE(is_orange,0)=0 AND COALESCE(voided,0)=0 AND COALESCE(is_legacy_rebatch,0)=0 GROUP BY batch_number`).all(..._allKids); }
       const _lblSum = {};
       for (const r of (lr || [])) _lblSum[String(r.batch_number).trim().toUpperCase()] = parseFloat(r.q) || 0;
+      // v59K (Shri Kant Gupta / Ishan, 31 Oct 2026 — 26X142 / 26X142A / 26X142B / 26X142C): a re-customer
+      // split child that was later DELETED in Planning (purge-cascade voids every one of its labels but
+      // leaves its recustomer_log row) has NO live labels, so the v52W refinement found nothing and the
+      // tier-(2) boxes×pack figure survived as its "share" — 26X142B and 26X142C each kept 20.00 L of a
+      // 36.95 L parent although both orders were gone, the three shares (18 + 20 + 20 = 58) were scaled
+      // into 36.95, the live child 26X142A fell to 11.47 L against 18 L scanned in, the parent went to
+      // 0, and 25.5 L of family gross was attributed to batches that no longer exist. Rule: a child that
+      // HAS label rows but none live (all voided), or that is no longer a live Planning order, holds
+      // nothing — its share is 0 and the material stays with the parent. The boxes×pack fallback now
+      // applies only to a live child whose labels have not been rebatched at all (no label rows).
+      let _lblAny = {};
+      try {
+        let la;
+        if (pgPool) la = (await pgPool.query(`SELECT batch_number, COUNT(*) AS n FROM tracking_labels WHERE batch_number = ANY($1) GROUP BY batch_number`, [_allKids])).rows;
+        else { const ph = _allKids.map(() => '?').join(','); la = db.prepare(`SELECT batch_number, COUNT(*) AS n FROM tracking_labels WHERE batch_number IN (${ph}) GROUP BY batch_number`).all(..._allKids); }
+        for (const r of (la || [])) _lblAny[String(r.batch_number).trim().toUpperCase()] = parseInt(r.n, 10) || 0;
+      } catch (e) { _lblAny = {}; }
+      const _liveKid = {};
+      for (const o of orders) { if (o && !o.deleted && o.batchNumber) _liveKid[String(o.batchNumber).trim().toUpperCase()] = true; }
+      let _v59kZeroed = 0;
       for (const f of families) for (const c of f.children) {
-        const s = _lblSum[String(c.batch).trim().toUpperCase()];
-        if (s > 0) c.boxed = +s.toFixed(3);
+        const key = String(c.batch).trim().toUpperCase();
+        const s = _lblSum[key];
+        if (s > 0) { c.boxed = +s.toFixed(3); continue; }
+        if (f.inferred) continue;                                   // v52X: inferred children already carry boxed 0
+        const hasRows = (_lblAny[key] || 0) > 0;
+        const isLive = !!_liveKid[key];
+        if ((hasRows || (!isLive && orders.length)) && c.boxed > 0) { c.boxed = 0; _v59kZeroed++; }
       }
+      if (_v59kZeroed) console.log('[v59K] split child(ren) with no live labels / deleted order zeroed:', _v59kZeroed);
       // v52X: inferred children are KEPT even at boxed 0 — the applier reduces the parent by an
       // own-gross child's own figure regardless of labels, and a boxed-0 no-gross child simply
       // receives nothing (harmless).
@@ -10616,6 +10643,83 @@ function _v46k_applyGrossApportionment(map, families) {
 // dispatch_record_id row), and recomputes actuals for every affected batch (new ∪ prior) so
 // the truck binner / lot-status consumer net correctly. Used by both the HTTP handler and the
 // historical auto-pair reconcile.
+// ═══ v59L (Ishan, 2 Nov 2026 — Aashish Saini: 26N066 / 26N067 "dispatch shows boxes, packing shows zero") ═══
+// A regularised / deemed scan-out dispatch wrote a dispatch record and NOTHING in tracking_scans, so a
+// batch whose boxes cleared PI and physically left on an admin-regularised invoice kept Packed = 0,
+// Frozen WIP = its whole packed quantity, "dispatched beyond its packed", and every box open in Report F's
+// PI → Packing handover gap — forever, because the boxes are gone and can never be scanned. The admin who
+// regularises has declared those boxes shipped; the packing-in they imply is recorded here, per REAL box
+// label, explicitly tagged (operator 'deemed-pack:<tag>:<who>') and auditable — not silent netting.
+// Bounded: only this batch's own labels that (a) are live, blue, non-specimen, (b) have a live PI-out
+// (AIM-out for an unprinted batch) and (c) have no live packing-in, in label order, and only up to the
+// box shortfall (dispatched boxes − real packed boxes). Quantity: a deemed row is valued at the label's
+// qty only while the batch's dispatched quantity still exceeds its packed quantity (recon entries
+// included); beyond that the row carries qty 0 — it closes the per-box gap without adding quantity
+// (26N066: a Report Z entry already recorded the month-end output). Cross-batch over-invoicing is
+// therefore untouched and stays visible exactly as v54R requires. Idempotent per tag.
+async function _v59lDeemPackIn(batchNumber, tag, who, ts, opts) {
+  const dry = !!(opts && opts.dry);
+  const bn = String(batchNumber || '').trim();
+  if (!bn) return { batch: bn, deemed: 0, skipped: 'no batch' };
+  const q = async (sql, params) => pgPool ? (await pgPool.query(sql, params)).rows
+                                         : db.prepare(sql.replace(/\$\d+/g, '?')).all(...(params || []));
+  const opLike = 'deemed-pack:' + tag + ':%';
+  if (!dry) {
+    try {
+      if (pgPool) await pgPool.query(`DELETE FROM tracking_scans WHERE batch_number=$1 AND operator LIKE $2`, [bn, opLike]);
+      else db.prepare(`DELETE FROM tracking_scans WHERE batch_number=? AND operator LIKE ?`).run(bn, opLike);
+    } catch (e) {}
+  }
+  // dispatched: records (boxes, qty) + live dispatch-out scans by distinct label
+  const rec = (await q(`SELECT COALESCE(SUM(boxes),0) AS b, COALESCE(SUM(qty),0) AS q FROM tracking_dispatch_records WHERE batch_number=$1`, [bn]))[0] || {};
+  const dOut = (await q(`SELECT COUNT(DISTINCT s.label_id) AS b, COALESCE(SUM(${_v47gScanQtySql('s','l')}),0) AS q
+                           FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id=s.label_id
+                          WHERE s.batch_number=$1 AND s.dept='dispatch' AND s.type='out' AND s.label_id NOT LIKE 'recon-%'
+                            AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)`, [bn]))[0] || {};
+  const dispBoxes = (parseInt(rec.b, 10) || 0) + (parseInt(dOut.b, 10) || 0);
+  const dispQty = (parseFloat(rec.q) || 0) + (parseFloat(dOut.q) || 0);
+  // packed: live packing-in — real boxes (distinct label) and quantity (recon rows included)
+  const pk = (await q(`SELECT COUNT(DISTINCT CASE WHEN s.label_id NOT LIKE 'recon-%' THEN s.label_id END) AS b,
+                              COALESCE(SUM(${_v47gScanQtySql('s','l')}),0) AS q
+                         FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id=s.label_id
+                        WHERE s.batch_number=$1 AND s.dept='packing' AND s.type='in'
+                          AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)`, [bn]))[0] || {};
+  const packedBoxes = parseInt(pk.b, 10) || 0, packedQty = parseFloat(pk.q) || 0;
+  let boxDeficit = dispBoxes - packedBoxes, qtyDeficit = dispQty - packedQty;
+  if (boxDeficit <= 0) return { batch: bn, deemed: 0, dispBoxes, packedBoxes, dispQty: +dispQty.toFixed(2), packedQty: +packedQty.toFixed(2), skipped: 'no box shortfall' };
+  // candidates: live blue labels past PI (or AIM for an unprinted batch) with no live packing-in
+  const hasPi = ((await q(`SELECT 1 AS x FROM tracking_scans s WHERE s.batch_number=$1 AND s.dept='pi' AND s.type='out'
+                             AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id) LIMIT 1`, [bn])).length > 0);
+  const outDept = hasPi ? 'pi' : 'aim';
+  const cands = await q(`SELECT l.id, l.label_number, COALESCE(l.qty,0) AS qty
+                           FROM tracking_labels l
+                          WHERE l.batch_number=$1 AND COALESCE(l.voided,0)=0 AND COALESCE(l.is_orange,0)=0 AND COALESCE(l.label_number,0)<>0
+                            AND EXISTS (SELECT 1 FROM tracking_scans o WHERE o.label_id=l.id AND o.dept=$2 AND o.type='out'
+                                          AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=o.id))
+                            AND NOT EXISTS (SELECT 1 FROM tracking_scans i WHERE i.label_id=l.id AND i.dept='packing' AND i.type='in'
+                                          AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=i.id))
+                          ORDER BY l.label_number, l.id`, [bn, outDept]);
+  const take = cands.slice(0, boxDeficit);
+  const genId = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+  const op = 'deemed-pack:' + tag + ':' + (who || 'admin');
+  let n = 0, nQty = 0, nBoxOnly = 0;
+  for (const c of take) {
+    const lq = parseFloat(c.qty) || 0;
+    const withQty = qtyDeficit >= lq - 0.005 && lq > 0;
+    if (withQty) { qtyDeficit -= lq; nQty++; } else nBoxOnly++;
+    if (!dry) {
+      const qv = withQty ? null : 0;
+      if (pgPool) await pgPool.query(`INSERT INTO tracking_scans (id,label_id,batch_number,dept,type,ts,operator,qty) VALUES ($1,$2,$3,'packing','in',$4,$5,$6) ON CONFLICT(id) DO NOTHING`, [genId(), c.id, bn, ts, op, qv]);
+      else db.prepare(`INSERT OR IGNORE INTO tracking_scans (id,label_id,batch_number,dept,type,ts,operator,qty) VALUES (?,?,?,'packing','in',?,?,?)`).run(genId(), c.id, bn, ts, op, qv);
+    }
+    n++;
+  }
+  if (!dry && n) {
+    try { logAudit(who || 'admin', 'admin', 'tracking', 'DEEMED_PACK_IN', `${bn}: ${n} box(es) deemed packed-in on ${tag} (${nQty} at label qty, ${nBoxOnly} box-only) — dispatched ${dispBoxes} bx / ${dispQty.toFixed(2)} L vs packed ${packedBoxes} bx / ${packedQty.toFixed(2)} L; stage ${outDept}-out`); } catch (e) {}
+  }
+  return { batch: bn, deemed: n, atQty: nQty, boxOnly: nBoxOnly, candidates: cands.length, dispBoxes, packedBoxes, dispQty: +dispQty.toFixed(2), packedQty: +packedQty.toFixed(2), stage: outDept };
+}
+
 async function _applyRegularisation(inv, clean, who, ts, rsn) {
   // v50Y (confirmed by Ishan — option A): boxes fallback at the single choke point every caller
   // (regularise UI, allocation apply, auto-pair) passes through. A clean entry with qty but no
@@ -10704,6 +10808,8 @@ async function _applyRegularisation(inv, clean, who, ts, rsn) {
     // v52H: the regularised invoice is a REAL dispatch for this batch — re-shrink any earlier ✓ Dispatch
     // mark so the two never stack (26ZA083: manual 25L on 17 Aug + invoice 10.5L on 19 Aug = 35.5L).
     try { await _v52hRenetManual(b); } catch (e) {}
+    // v59L: the boxes this regularised invoice declares shipped are deemed packed-in (per real label, tagged)
+    try { const d = await _v59lDeemPackIn(b, 'inv:' + invId, who, ts); if (d && d.deemed) console.log('[v59L] deemed packing-in', JSON.stringify(d)); } catch (e) { console.warn('[v59L] deem pack-in failed', b, e.message); }
   }
   return { joinedBatches, affected };
 }
@@ -12238,6 +12344,11 @@ app.post('/api/invoice/:id/deemed-scan-out', async (req, res) => {
     } catch (e) {
       console.warn('[v39 P16] dispatch_actuals recompute failed:', e.message);
     }
+    // v59L: deem the packing-in the admin's deemed scan-out implies (per real label, tagged; see _v59lDeemPackIn)
+    let _deemPack59l = null;
+    for (const _b of String(inv.batch_number || '').split(',').map(x => x.trim()).filter(Boolean)) {
+      try { _deemPack59l = await _v59lDeemPackIn(_b, 'inv:' + invId, admin, ts); if (_deemPack59l && _deemPack59l.deemed) console.log('[v59L] deemed packing-in', JSON.stringify(_deemPack59l)); } catch (e) { console.warn('[v59L] deem pack-in failed', _b, e.message); }
+    }
     // Annotate dispatch_plans (best-effort)
     try {
       await _v39_updateDispatchPlansForInvoice(inv.batch_number, {
@@ -12262,6 +12373,7 @@ app.post('/api/invoice/:id/deemed-scan-out', async (req, res) => {
       qty: qtyLakhs,
       ts,
       is_deemed_scan_out: true,
+      deemed_pack_in: _deemPack59l,   // v59L
     });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -12271,6 +12383,36 @@ app.post('/api/invoice/:id/deemed-scan-out', async (req, res) => {
 // v39 Phase 16: GET /api/invoice/pending-direct-sap-approval
 // List of invoices needing admin review — source='direct_sap' AND not yet
 // admin-approved. Used by the admin "Direct-SAP Approval Queue" UI.
+
+// v59L: settle EXISTING regularised / deemed dispatches (the 26N066 / 26N067 class) — admin only, dry run by
+// default. Walks invoices_received with is_deemed_scan_out=1 dispatched on/after `since` (default 2026-10-01)
+// and runs _v59lDeemPackIn for each of their batches; {apply:1} writes, otherwise reports what would be written.
+app.post('/api/tracking/deem-pack-backfill', async (req, res) => {
+  if (!_requireAdmin(req, res)) return;
+  try {
+    const admin = (req.headers['x-sunloc-user'] || 'admin').toString();
+    const apply = !!(req.body && (req.body.apply === 1 || req.body.apply === true || req.body.apply === '1'));
+    const since = (req.body && req.body.since) ? String(req.body.since) : '2026-10-01';
+    const onlyBatch = (req.body && req.body.batch) ? String(req.body.batch).trim().toUpperCase() : '';
+    let invs;
+    if (pgPool) invs = (await pgPool.query(`SELECT id, batch_number, sap_doc_num, dispatched_at FROM invoices_received WHERE COALESCE(is_deemed_scan_out,0)=1 AND dispatch_status='dispatched' AND COALESCE(dispatched_at,'') >= $1 ORDER BY dispatched_at`, [since])).rows;
+    else invs = db.prepare(`SELECT id, batch_number, sap_doc_num, dispatched_at FROM invoices_received WHERE COALESCE(is_deemed_scan_out,0)=1 AND dispatch_status='dispatched' AND COALESCE(dispatched_at,'') >= ? ORDER BY dispatched_at`).all(since);
+    const ts = new Date().toISOString();
+    const out = [];
+    for (const inv of (invs || [])) {
+      for (const b of String(inv.batch_number || '').split(',').map(x => x.trim()).filter(Boolean)) {
+        if (onlyBatch && b.toUpperCase() !== onlyBatch) continue;
+        try {
+          const d = await _v59lDeemPackIn(b, 'inv:' + inv.id, admin, ts, { dry: !apply });
+          out.push(Object.assign({ invoice: inv.sap_doc_num || inv.id, dispatchedAt: inv.dispatched_at }, d));
+        } catch (e) { out.push({ invoice: inv.sap_doc_num || inv.id, batch: b, error: e.message }); }
+      }
+    }
+    const deemed = out.reduce((a, r) => a + (r.deemed || 0), 0);
+    if (apply) { try { logAudit(admin, 'admin', 'tracking', 'DEEMED_PACK_BACKFILL', `since ${since}${onlyBatch ? ' batch ' + onlyBatch : ''}: ${out.length} invoice-batch(es), ${deemed} box(es) deemed packed-in`); } catch (e) {} }
+    res.json({ ok: true, apply, since, invoices: (invs || []).length, rows: out.filter(r => r.deemed || r.error), deemed });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
 app.get('/api/invoice/pending-direct-sap-approval', async (req, res) => {
   if (!_requireAdmin(req, res)) return;
   try {
