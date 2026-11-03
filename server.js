@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v59L';
+const APP_BUILD = 'v59M';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -10699,6 +10699,19 @@ async function _v59lDeemPackIn(batchNumber, tag, who, ts, opts) {
                             AND NOT EXISTS (SELECT 1 FROM tracking_scans i WHERE i.label_id=l.id AND i.dept='packing' AND i.type='in'
                                           AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=i.id))
                           ORDER BY l.label_number, l.id`, [bn, outDept]);
+  // v59M: when nothing is eligible, say why — counts the panel shows so an empty result is explainable
+  let diag = null;
+  if (!cands.length) {
+    try {
+      const d = (await q(`SELECT COUNT(*) FILTER (WHERE COALESCE(l.voided,0)=0 AND COALESCE(l.is_orange,0)=0 AND COALESCE(l.label_number,0)<>0) AS live_blue,
+                                 COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM tracking_scans o WHERE o.label_id=l.id AND o.dept='pi' AND o.type='out')) AS pi_out_any,
+                                 COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM tracking_scans o WHERE o.label_id=l.id AND o.dept='aim' AND o.type='out')) AS aim_out_any,
+                                 COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM tracking_scans i WHERE i.label_id=l.id AND i.dept='packing' AND i.type='in')) AS pack_in_any
+                            FROM tracking_labels l WHERE l.batch_number=$1`, [bn]))[0] || {};
+      const sc = (await q(`SELECT s.dept, s.type, COUNT(*) AS n, COUNT(r.reversed_scan_id) AS rev FROM tracking_scans s LEFT JOIN tracking_scan_reversals r ON r.reversed_scan_id=s.id WHERE s.batch_number=$1 GROUP BY s.dept, s.type ORDER BY 1,2`, [bn]));
+      diag = { labels: d, scans: sc.map(x => x.dept + ':' + x.type + ' ' + x.n + (Number(x.rev) ? ' (' + x.rev + ' reversed)' : '')).join(', ') };
+    } catch (e) { diag = { error: e.message }; }
+  }
   const take = cands.slice(0, boxDeficit);
   const genId = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
   const op = 'deemed-pack:' + tag + ':' + (who || 'admin');
@@ -10717,7 +10730,7 @@ async function _v59lDeemPackIn(batchNumber, tag, who, ts, opts) {
   if (!dry && n) {
     try { logAudit(who || 'admin', 'admin', 'tracking', 'DEEMED_PACK_IN', `${bn}: ${n} box(es) deemed packed-in on ${tag} (${nQty} at label qty, ${nBoxOnly} box-only) — dispatched ${dispBoxes} bx / ${dispQty.toFixed(2)} L vs packed ${packedBoxes} bx / ${packedQty.toFixed(2)} L; stage ${outDept}-out`); } catch (e) {}
   }
-  return { batch: bn, deemed: n, atQty: nQty, boxOnly: nBoxOnly, candidates: cands.length, dispBoxes, packedBoxes, dispQty: +dispQty.toFixed(2), packedQty: +packedQty.toFixed(2), stage: outDept };
+  return { batch: bn, deemed: n, atQty: nQty, boxOnly: nBoxOnly, candidates: cands.length, dispBoxes, packedBoxes, dispQty: +dispQty.toFixed(2), packedQty: +packedQty.toFixed(2), stage: outDept, skipped: (!n ? 'no eligible box (live label past ' + outDept.toUpperCase() + ' without a packing scan)' : undefined), diag };
 }
 
 async function _applyRegularisation(inv, clean, who, ts, rsn) {
@@ -12391,26 +12404,34 @@ app.post('/api/tracking/deem-pack-backfill', async (req, res) => {
   if (!_requireAdmin(req, res)) return;
   try {
     const admin = (req.headers['x-sunloc-user'] || 'admin').toString();
-    const apply = !!(req.body && (req.body.apply === 1 || req.body.apply === true || req.body.apply === '1'));
-    const since = (req.body && req.body.since) ? String(req.body.since) : '2026-10-01';
-    const onlyBatch = (req.body && req.body.batch) ? String(req.body.batch).trim().toUpperCase() : '';
+    const body = req.body || {};
+    const apply = !!(body.apply === 1 || body.apply === true || body.apply === '1');
+    const since = body.since ? String(body.since) : '2026-10-01';
+    const onlyBatch = body.batch ? String(body.batch).trim().toUpperCase() : '';
+    const onlyCust = body.customer ? String(body.customer).trim().toLowerCase() : '';
+    // v59M: an APPLY names exactly which invoice·batch pairs to settle (the panel's selection); nothing else is written
+    const items = Array.isArray(body.items) ? body.items.map(x => ({ inv: String(x.invoiceId || x.inv || ''), batch: String(x.batch || '').trim().toUpperCase() })).filter(x => x.inv && x.batch) : null;
+    if (apply && (!items || !items.length)) return res.status(400).json({ ok: false, error: 'apply needs items: [{invoiceId, batch}]' });
     let invs;
-    if (pgPool) invs = (await pgPool.query(`SELECT id, batch_number, sap_doc_num, dispatched_at FROM invoices_received WHERE COALESCE(is_deemed_scan_out,0)=1 AND dispatch_status='dispatched' AND COALESCE(dispatched_at,'') >= $1 ORDER BY dispatched_at`, [since])).rows;
-    else invs = db.prepare(`SELECT id, batch_number, sap_doc_num, dispatched_at FROM invoices_received WHERE COALESCE(is_deemed_scan_out,0)=1 AND dispatch_status='dispatched' AND COALESCE(dispatched_at,'') >= ? ORDER BY dispatched_at`).all(since);
+    const selSql = `SELECT id, batch_number, sap_doc_num, customer, dispatched_at, deemed_reason, total_boxes, total_qty_lakhs FROM invoices_received WHERE COALESCE(is_deemed_scan_out,0)=1 AND dispatch_status='dispatched' AND COALESCE(dispatched_at,'') >= ${pgPool ? '$1' : '?'} ORDER BY dispatched_at DESC`;
+    if (pgPool) invs = (await pgPool.query(selSql, [since])).rows; else invs = db.prepare(selSql).all(since);
     const ts = new Date().toISOString();
     const out = [];
     for (const inv of (invs || [])) {
+      if (onlyCust && !String(inv.customer || '').toLowerCase().includes(onlyCust)) continue;
       for (const b of String(inv.batch_number || '').split(',').map(x => x.trim()).filter(Boolean)) {
-        if (onlyBatch && b.toUpperCase() !== onlyBatch) continue;
+        const bu = b.toUpperCase();
+        if (onlyBatch && !bu.includes(onlyBatch)) continue;
+        if (items && !items.some(x => x.inv === String(inv.id) && x.batch === bu)) continue;
         try {
           const d = await _v59lDeemPackIn(b, 'inv:' + inv.id, admin, ts, { dry: !apply });
-          out.push(Object.assign({ invoice: inv.sap_doc_num || inv.id, dispatchedAt: inv.dispatched_at }, d));
-        } catch (e) { out.push({ invoice: inv.sap_doc_num || inv.id, batch: b, error: e.message }); }
+          out.push(Object.assign({ invoiceId: String(inv.id), invoice: inv.sap_doc_num || inv.id, customer: inv.customer || '', dispatchedAt: inv.dispatched_at, reason: inv.deemed_reason || '', invBoxes: inv.total_boxes, invQty: inv.total_qty_lakhs }, d));
+        } catch (e) { out.push({ invoiceId: String(inv.id), invoice: inv.sap_doc_num || inv.id, customer: inv.customer || '', dispatchedAt: inv.dispatched_at, batch: b, error: e.message }); }
       }
     }
     const deemed = out.reduce((a, r) => a + (r.deemed || 0), 0);
-    if (apply) { try { logAudit(admin, 'admin', 'tracking', 'DEEMED_PACK_BACKFILL', `since ${since}${onlyBatch ? ' batch ' + onlyBatch : ''}: ${out.length} invoice-batch(es), ${deemed} box(es) deemed packed-in`); } catch (e) {} }
-    res.json({ ok: true, apply, since, invoices: (invs || []).length, rows: out.filter(r => r.deemed || r.error), deemed });
+    if (apply) { try { logAudit(admin, 'admin', 'tracking', 'DEEMED_PACK_BACKFILL', `${items.length} invoice·batch(es) selected: ${deemed} box(es) deemed packed-in — ${out.filter(r => r.deemed).map(r => r.batch + ' ' + r.deemed).join(', ') || 'none'}`); } catch (e) {} }
+    res.json({ ok: true, apply, since, invoices: (invs || []).length, rows: out, deemed });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 app.get('/api/invoice/pending-direct-sap-approval', async (req, res) => {
@@ -31894,8 +31915,14 @@ app.get('/api/gpr/receipts', async (req, res) => {
       const cRow = pgPool ? (await pgPool.query(cSql)).rows[0] : db.prepare(cSql).get();
       const rSql = `SELECT COUNT(*) AS n, MAX(date) AS last_day FROM dpr_records`;
       const rRow = pgPool ? (await pgPool.query(rSql)).rows[0] : db.prepare(rSql).get();
+      // v59M (Ishan, 3 Nov — "no Printing / PI salvage pending; dropdown shows two accounts"): the queue is explainable
+      // per ACCOUNT — pending vs accepted Tracking credits, last day each — plus the heavy credits sweep's own record.
+      const aSql = `SELECT account, receipt_status, COUNT(*) AS n, COALESCE(SUM(qty_kg),0) AS kg, MAX(production_day) AS last_day FROM gpr_ledger WHERE movement_type='generation' AND source IN ('tracking','dpr') GROUP BY account, receipt_status`;
+      const aRows = pgPool ? (await pgPool.query(aSql)).rows : db.prepare(aSql).all();
       diag = { pending_by_floor: dRows.map(r => ({ floor: r.floor || null, n: Number(r.n), kg: +Number(r.kg).toFixed(2), last_day: r.last_day })),
                pending_total: dRows.reduce((a, r) => a + Number(r.n), 0),
+               by_account: aRows.map(r => ({ account: r.account, label: GPR_ACCOUNT_LABELS[r.account] || r.account, status: r.receipt_status || 'accepted', n: Number(r.n), kg: +Number(r.kg).toFixed(2), last_day: r.last_day })),
+               credits_sweep: _gprCreditSweepLast,
                cutting_rows_total: Number((cRow || {}).n || 0), cutting_last_day: (cRow || {}).last_day || null, cutting_last_at: (cRow || {}).last_at || null,
                dpr_records: Number((rRow || {}).n || 0), dpr_last_day: (rRow || {}).last_day || null,
                sweep: _gprSweepLast, sweep_in_flight: !!_gprSweepInFlight || !!_gprCreditSweepInFlight };   // v59B: the timer's credits sweep counts too

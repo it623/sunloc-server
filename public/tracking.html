@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v59L</title>
+<title>Sunloc Tracking Suite v1.0 · build v59M</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v59L</p>
+      <p>Tracking Suite v1.0 · build v59M</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v59L</p>
+      <p>Tracking Suite v1.0 · build v59M</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -8429,24 +8429,111 @@ async function _v41_closeInvoiceAsLegacy(invoiceId) {
 // drift). Includes an Excel export styled like Report E's (v50W colour language).
 let _v51dOverInvRows = null, _v51dOverInvUnattr = null;
 // v59L (Aashish Saini / Ishan, 2 Nov 2026): admin backfill for regularised / deemed dispatches whose boxes were never
-// scanned into Packing — dry run → confirm → apply. The server does the per-label work (_v59lDeemPackIn).
-async function _v59lDeemPackBackfill() {
-  const since = prompt('Settle deemed dispatches: consider invoices dispatched on/after (YYYY-MM-DD)', '2026-10-01');
-  if (!since) return;
-  const batch = prompt('Limit to one batch? (leave blank for all)', '') || '';
-  const hdr = { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'x-sunloc-user': currentUser?.username || '' };
-  const call = async (apply) => { const r = await fetch(serverUrl + '/api/tracking/deem-pack-backfill', { method: 'POST', headers: hdr, body: JSON.stringify({ since, batch, apply: apply ? 1 : 0 }) }); return r.json(); };
-  let d; try { d = await call(false); } catch (e) { alert('Dry run failed: ' + e.message); return; }
-  if (!d || !d.ok) { alert('Dry run failed: ' + ((d && d.error) || 'unknown')); return; }
-  const rows = (d.rows || []).filter(r => r.deemed);
-  if (!rows.length) { alert(`Nothing to settle — ${d.invoices} deemed invoice(s) since ${since} checked; every box is already packed-in or no eligible box (live label past PI without a packing scan) exists.`); return; }
-  const lines = rows.map(r => `${r.batch} (inv ${r.invoice}): ${r.deemed} box(es) — ${r.atQty} at label qty, ${r.boxOnly} box-only · dispatched ${r.dispBoxes} bx / ${r.dispQty} L vs packed ${r.packedBoxes} bx / ${r.packedQty} L`);
-  if (!confirm(`DRY RUN — ${rows.length} batch(es), ${d.deemed} box(es) would be deemed packed-in:\n\n${lines.join('\n')}\n\nApply? Each row is written as a Packing IN on the box's own label, tagged DEEMED and audited.`)) return;
-  try { d = await call(true); } catch (e) { alert('Apply failed: ' + e.message); return; }
-  if (!d || !d.ok) { alert('Apply failed: ' + ((d && d.error) || 'unknown')); return; }
-  alert(`Done — ${d.deemed} box(es) deemed packed-in across ${(d.rows||[]).filter(r=>r.deemed).length} batch(es). Packed, WIP and Report F update on the next refresh.`);
-  try { if (typeof pullFromServer === 'function') pullFromServer(); } catch (_) {}
+// scanned into Packing. v59M (Ishan, 3 Nov): the prompt chain is replaced by a PANEL in the invoice area — filters,
+// one Scan (dry run), a table of every regularised / deemed invoice·batch with what would be written and why a row
+// cannot be settled, tick the rows, Settle selected. Nothing is written until "Settle selected" is confirmed.
+let _v59mDeemOpen = false, _v59mDeemRows = null, _v59mDeemSel = {};
+function _v59lDeemPackBackfill() { _v59mToggleDeem(); }
+function _v59mToggleDeem() {
+  _v59mDeemOpen = !_v59mDeemOpen;
+  const btn = document.getElementById('v59m-deem-toggle');
+  if (_v59mDeemOpen) {
+    if (btn) { btn.style.background = '#0891b2'; btn.style.color = '#fff'; btn.classList.remove('btn-secondary'); }
+    _v59mRenderDeem();
+  } else {
+    if (btn) { btn.style.background = ''; btn.style.color = ''; btn.classList.add('btn-secondary'); }
+    _v59mDeemRows = null; _v59mDeemSel = {};
+    _v39_renderInvoiceTable();
+    const st = document.getElementById('v39-gi-status-text');
+    if (st) st.textContent = `${_v39_invoiceList.length} invoice${_v39_invoiceList.length===1?'':'s'} loaded`;
+  }
 }
+function _v59mDeemHdr() {
+  return { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'x-sunloc-user': currentUser?.username || '' };
+}
+async function _v59mDeemScan() {
+  const since = (document.getElementById('v59m-deem-since')?.value || '2026-10-01').trim();
+  const batch = (document.getElementById('v59m-deem-batch')?.value || '').trim();
+  const customer = (document.getElementById('v59m-deem-cust')?.value || '').trim();
+  const st = document.getElementById('v59m-deem-status'); if (st) st.textContent = 'Scanning… (every regularised / deemed invoice since ' + since + ')';
+  try {
+    const r = await fetch(serverUrl + '/api/tracking/deem-pack-backfill', { method: 'POST', headers: _v59mDeemHdr(), body: JSON.stringify({ since, batch, customer, apply: 0 }), signal: AbortSignal.timeout(120000) });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || 'unknown');
+    _v59mDeemRows = d.rows || []; _v59mDeemSel = {};
+    _v59mDeemRows.forEach(x => { if (x.deemed > 0) _v59mDeemSel[x.invoiceId + '|' + x.batch] = 1; });   // settleable rows pre-ticked
+    if (st) st.textContent = `${d.invoices} deemed invoice${d.invoices===1?'':'s'} since ${since} · ${_v59mDeemRows.filter(x=>x.deemed>0).length} settleable · ${d.deemed} box${d.deemed===1?'':'es'} in all`;
+  } catch (e) { if (st) st.textContent = 'Scan failed: ' + e.message; }
+  _v59mRenderDeem();
+}
+async function _v59mDeemApply() {
+  const rows = (_v59mDeemRows || []).filter(x => x.deemed > 0 && _v59mDeemSel[x.invoiceId + '|' + x.batch]);
+  if (!rows.length) { alert('Tick at least one settleable row.'); return; }
+  const boxes = rows.reduce((a, x) => a + x.deemed, 0);
+  if (!confirm(`Settle ${rows.length} invoice·batch row${rows.length===1?'':'s'} — ${boxes} box${boxes===1?'':'es'} will be recorded as Packing IN on their own labels (tagged DEEMED, audited)?\n\n` + rows.map(x => `${x.batch} · inv ${x.invoice}: ${x.deemed} box(es)`).join('\n'))) return;
+  const st = document.getElementById('v59m-deem-status'); if (st) st.textContent = 'Settling…';
+  try {
+    const since = (document.getElementById('v59m-deem-since')?.value || '2026-10-01').trim();
+    const r = await fetch(serverUrl + '/api/tracking/deem-pack-backfill', { method: 'POST', headers: _v59mDeemHdr(), body: JSON.stringify({ since, apply: 1, items: rows.map(x => ({ invoiceId: x.invoiceId, batch: x.batch })) }), signal: AbortSignal.timeout(120000) });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || 'unknown');
+    if (st) st.textContent = `Done — ${d.deemed} box${d.deemed===1?'':'es'} deemed packed-in across ${(d.rows||[]).filter(x=>x.deemed>0).length} row(s). Re-scanning…`;
+    try { if (typeof pullFromServer === 'function') pullFromServer(true); } catch (_) {}
+    await _v59mDeemScan();
+  } catch (e) { if (st) st.textContent = 'Settle failed: ' + e.message; }
+}
+function _v59mRenderDeem() {
+  const el = document.getElementById('v39-gi-table'); if (!el) return;
+  const onlyOk = document.getElementById('v59m-deem-only')?.checked ?? true;
+  const since = document.getElementById('v59m-deem-since')?.value || '2026-10-01';
+  const batch = document.getElementById('v59m-deem-batch')?.value || '';
+  const cust = document.getElementById('v59m-deem-cust')?.value || '';
+  const rows = (_v59mDeemRows || []).filter(x => !onlyOk || x.deemed > 0 || x.error);
+  const selN = rows.filter(x => x.deemed > 0 && _v59mDeemSel[x.invoiceId + '|' + x.batch]).length;
+  const why = (x) => {
+    if (x.error) return `<span style="color:var(--red)">error: ${x.error}</span>`;
+    if (x.deemed > 0) return `<span style="color:#047857;font-weight:600">settleable</span>`;
+    if (x.skipped === 'no box shortfall') return `already packed-in (${x.packedBoxes} bx ≥ ${x.dispBoxes} bx dispatched)`;
+    let t = x.skipped || 'nothing to do';
+    if (x.diag && x.diag.labels) { const L = x.diag.labels; t += ` — labels: ${L.live_blue||0} live blue, ${L.pi_out_any||0} with PI-out, ${L.aim_out_any||0} with AIM-out, ${L.pack_in_any||0} with packing-in`; }
+    if (x.diag && x.diag.scans) t += ` · scans: ${x.diag.scans}`;
+    if (x.diag && x.diag.error) t += ` · diag error: ${x.diag.error}`;
+    return `<span style="color:var(--text3)">${t}</span>`;
+  };
+  el.innerHTML = `
+    <div class="card" style="border-top:4px solid #0891b2;padding:12px">
+      <div style="font-weight:700;margin-bottom:4px">🧾 Settle deemed dispatches</div>
+      <div class="text-sm text-muted" style="margin-bottom:10px">Invoices dispatched by <b>regularise</b> or <b>deemed scan-out</b> wrote a dispatch record but no scans, so their boxes stay “not packed” for ever (Packed 0, phantom frozen WIP, open PI → Packing handover gap). Scan lists every such invoice since the date; a row is <b>settleable</b> when the batch's own boxes have cleared PI (AIM for UP) without a packing scan. Settling writes a Packing IN on each box's real label, tagged <span style="color:#0891b2;font-weight:700">DEEMED</span> and audited — nothing else is touched.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin-bottom:10px">
+        <div><label class="text-sm text-muted" style="display:block">Dispatched on/after</label><input type="date" id="v59m-deem-since" value="${since}" class="form-control" style="padding:5px 8px;font-size:12px"></div>
+        <div><label class="text-sm text-muted" style="display:block">Batch (partial)</label><input type="text" id="v59m-deem-batch" value="${batch}" placeholder="e.g. 26N06" class="form-control" style="padding:5px 8px;font-size:12px;width:130px"></div>
+        <div><label class="text-sm text-muted" style="display:block">Customer (partial)</label><input type="text" id="v59m-deem-cust" value="${cust}" placeholder="e.g. ROHAN" class="form-control" style="padding:5px 8px;font-size:12px;width:160px"></div>
+        <button class="btn btn-sm" style="background:#0891b2;color:#fff;border:none" onclick="_v59mDeemScan()">🔍 Scan (dry run)</button>
+        <label class="text-sm" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="v59m-deem-only" ${onlyOk?'checked':''} onchange="_v59mRenderDeem()"> settleable rows only</label>
+        <button class="btn btn-sm" style="background:#047857;color:#fff;border:none;margin-left:auto" onclick="_v59mDeemApply()" ${selN?'':'disabled'}>✅ Settle selected (${selN})</button>
+      </div>
+      <div id="v59m-deem-status" class="text-sm text-muted" style="margin-bottom:8px">${_v59mDeemRows ? '' : 'Press Scan to list the invoices.'}</div>
+      ${_v59mDeemRows ? `<div class="tbl-wrap" style="max-height:520px;overflow:auto"><table>
+        <thead><tr><th style="width:28px"><input type="checkbox" ${selN && selN===rows.filter(x=>x.deemed>0).length?'checked':''} onchange="_v59mDeemSelAll(this.checked)" title="tick / untick every settleable row shown"></th>
+          <th>Invoice</th><th>Dispatched</th><th>Customer</th><th>Batch</th><th>Reason</th>
+          <th class="text-right">Dispatched</th><th class="text-right">Packed</th><th class="text-right">Eligible boxes</th><th class="text-right">To deem</th><th>Status</th></tr></thead>
+        <tbody>${rows.length ? rows.map(x => { const k = x.invoiceId + '|' + x.batch; const ok = x.deemed > 0; return `
+          <tr style="${ok?'':'opacity:.75'}">
+            <td style="text-align:center">${ok ? `<input type="checkbox" ${_v59mDeemSel[k]?'checked':''} onchange="_v59mDeemSel['${k}']=this.checked?1:0;_v59mRenderDeem()">` : ''}</td>
+            <td class="td-mono">${x.invoice}</td>
+            <td class="td-mono text-sm">${x.dispatchedAt ? String(x.dispatchedAt).slice(0,10) : '—'}</td>
+            <td class="text-sm">${x.customer || '—'}</td>
+            <td class="td-bold td-mono">${x.batch}</td>
+            <td class="text-sm" style="max-width:220px;white-space:normal">${x.reason || '—'}</td>
+            <td class="td-mono text-right">${x.dispBoxes!=null ? x.dispBoxes+' bx<br><span style="font-size:10px;color:var(--text3)">'+fmt(x.dispQty)+' L</span>' : '—'}</td>
+            <td class="td-mono text-right">${x.packedBoxes!=null ? x.packedBoxes+' bx<br><span style="font-size:10px;color:var(--text3)">'+fmt(x.packedQty)+' L</span>' : '—'}</td>
+            <td class="td-mono text-right">${x.candidates!=null ? x.candidates : '—'}</td>
+            <td class="td-mono text-right fw-bold">${ok ? x.deemed + ' bx<br><span style="font-size:10px;color:var(--text3)">' + x.atQty + ' at qty · ' + x.boxOnly + ' box-only</span>' : '0'}</td>
+            <td class="text-sm" style="max-width:360px;white-space:normal">${why(x)}</td>
+          </tr>`; }).join('') : `<tr><td colspan="11" class="text-center text-muted" style="padding:24px">${onlyOk ? 'No settleable row — untick "settleable rows only" to see every scanned invoice and why it cannot be settled.' : 'No regularised / deemed invoice in this range.'}</td></tr>`}</tbody></table></div>` : ''}
+    </div>`;
+}
+function _v59mDeemSelAll(on) { (_v59mDeemRows||[]).forEach(x => { if (x.deemed > 0) { if (on) _v59mDeemSel[x.invoiceId + '|' + x.batch] = 1; else delete _v59mDeemSel[x.invoiceId + '|' + x.batch]; } }); _v59mRenderDeem(); }
 async function _v51dToggleOverInv() {
   window._giOverInv = !window._giOverInv;
   const btn = document.getElementById('v51d-overinv-toggle');
@@ -10991,7 +11078,7 @@ async function renderGeneratedInvoices() {
         <button class="btn btn-sm" style="background:#10b981;color:white;border:none" onclick="_v39_exportInvoicesCsv()">📥 Export Excel</button>
         <button id="v39-gi-realloc-toggle" class="btn btn-sm btn-secondary" onclick="_v44zjToggleNeedsRealloc()" title="Show only regularised invoices whose dispatch landed under a multi-batch (concatenated) key — these need re-allocation to drop from the truck plan.">⚠ Needs re-allocation</button>
         <button id="v51d-overinv-toggle" class="btn btn-sm btn-secondary" onclick="_v51dToggleOverInv()" title="Show every over-invoiced batch in one table: invoiced (received + pending) exceeds packed quantity — the v49C definition, consolidated.">🔺 Over-invoiced</button>
-        ${currentDept==='admin'?`<button class="btn btn-sm btn-secondary" onclick="_v59lDeemPackBackfill()" title="v59L: for invoices dispatched by regularise / deemed scan-out, record the packing IN those boxes imply (per real label, tagged DEEMED) — closes Packed = 0, phantom frozen WIP and the PI → Packing handover gap for boxes that physically left. Dry run first, then apply.">🧾 Settle deemed dispatches</button>`:''}
+        ${currentDept==='admin'?`<button id="v59m-deem-toggle" class="btn btn-sm btn-secondary" onclick="_v59mToggleDeem()" title="v59L: for invoices dispatched by regularise / deemed scan-out, record the packing IN those boxes imply (per real label, tagged DEEMED) — closes Packed = 0, phantom frozen WIP and the PI → Packing handover gap for boxes that physically left. Dry run first, then apply.">🧾 Settle deemed dispatches</button>`:''}
         <!-- v57Y: basis selector + Return & Cancel / Return Stock views -->
         <select id="v57y-gi-basis" class="form-control" style="width:auto;padding:5px 8px;font-size:12px;font-weight:600" onchange="_v57ySetBasis()" title="GROSS = every invoice SAP raised, cancelled ones included at full value. NET (production basis) = cancelled invoices removed and the quantity invoiced out of RETURN STOCK deducted in the month it is re-invoiced; credit notes are shown on their original invoice but not deducted. The KPI tiles and the export follow this choice.">
           <option value="gross" ${window._giBasis!=='net'?'selected':''}>Gross (all invoices)</option>
@@ -11185,6 +11272,7 @@ async function _v39_repullFromSap() {
 function _v39_renderInvoiceTable() {
   const tableEl = document.getElementById('v39-gi-table');
   if (!tableEl) return;
+  if (_v59mDeemOpen) { _v59mRenderDeem(); return; }   // v59M: the settle panel stays while it is open
   // v51D: while the over-invoiced view is toggled on, background refreshes must not stomp it
   if (window._giOverInv && _v51dOverInvRows) { _v51dRenderOverInv(); return; }
   if (window._giRC) { _v57yRenderRC(); return; }   // v57Y

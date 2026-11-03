@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v59L</title>
+<title>GPR · build v59M</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -421,8 +421,8 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v59L</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v59L</div>
+    <h1>GPR<span class="vpill">v59M</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v59M</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -442,7 +442,7 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v59L</span></div>
+  <div class="nbrand">GPR<span class="vpill">v59M</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <span style="display:inline-flex;align-items:center;gap:5px;margin-right:10px;padding:2px 6px;border:1px solid #3949ab;border-radius:6px;background:#232b6e" title="Production month — the month turns at 06:00 IST on the 1st (same rule as DPR, Tracking and Planning). Every list, picker and period view is scoped to this month's batch cohort; stock balances and pending receipts always show the live position.">
@@ -5214,10 +5214,19 @@ async function _loadReceiptsInner(force){
     const changed = sig !== _rcpSig; _rcpSig = sig;
     RCP_ROWS = rows;
     const keep = {}; rows.forEach(r=>{ if(RCP_SEL[r.id]) keep[r.id] = 1; }); RCP_SEL = keep;   // selections survive a reload
+    // v59M (Ishan, 3 Nov): the Account filter listed only the accounts that happened to be pending at the FIRST load
+    // and never refreshed — "only Cutting and AIM Salvage". It now always lists every reuse account, with the number
+    // of rows pending in each, and keeps the current selection.
     const sel = document.getElementById('rcp_acct');
-    if(sel && sel.options.length<=1){
-      const accts = [...new Set(rows.map(r=>r.account).filter(Boolean))];
-      sel.innerHTML = '<option value="">All accounts</option>' + accts.map(a=>'<option value="'+esc(a)+'">'+esc((rows.find(r=>r.account===a)||{}).account_label||a)+'</option>').join('');
+    if(sel){
+      const cur = sel.value || '';
+      const cnt = {}; rows.forEach(r=>{ cnt[r.account] = (cnt[r.account]||0)+1; });
+      const known = REUSE_ACCTS.map(a=>a[0]);
+      const extra = [...new Set(rows.map(r=>r.account).filter(a=>a && !known.includes(a)))];
+      sel.innerHTML = '<option value="">All accounts ('+rows.length+')</option>'
+        + REUSE_ACCTS.map(a=>'<option value="'+esc(a[0])+'">'+esc(a[1])+' ('+(cnt[a[0]]||0)+')</option>').join('')
+        + extra.map(a=>'<option value="'+esc(a)+'">'+esc((rows.find(r=>r.account===a)||{}).account_label||a)+' ('+cnt[a]+')</option>').join('');
+      sel.value = cur; if(sel.value !== cur) sel.value = '';
     }
     if(changed || !hadTable || force) renderReceipts();
     else { const m = document.getElementById('rcpRefreshing'); if(m) m.style.display = 'none'; }
@@ -5267,6 +5276,10 @@ function renderReceipts(){
       + ' &middot; DPR records: '+(dg.dpr_records||0)+(dg.dpr_last_day?' (last '+esc(_dm(dg.dpr_last_day))+')':'')
       + ' &middot; last feed sweep: '+(sw.at?esc(_v58dDt(sw.at))+' &mdash; '+(sw.cuttings==null?'?':sw.cuttings)+' cutting increment'+(sw.cuttings===1?'':'s')+', '+(sw.credits||0)+' batch'+(sw.credits===1?'':'es')+' checked ('+(sw.ms||0)+' ms)':'not yet run')
       + (sw.error?' <span style="color:var(--red)">&#9888; '+esc(sw.error)+'</span>':'')
+      /* v59M: the Tracking salvage credits sweep (AIM / Printing / PI, every 15 min) reported on its own, and the ledger's
+         Tracking + DPR generation rows per account — pending vs accepted — so "no PI salvage pending" is explainable */
+      + (dg.credits_sweep ? ' &middot; salvage credits sweep: '+esc(_v58dDt(dg.credits_sweep.at))+' &mdash; '+(dg.credits_sweep.batches||0)+' batches, +'+(dg.credits_sweep.created||0)+' ~'+(dg.credits_sweep.updated||0)+' &minus;'+(dg.credits_sweep.removed||0)+' rows'+((dg.credits_sweep.errors||[]).length?' <span style="color:var(--red)">&#9888; '+esc(dg.credits_sweep.errors.join('; '))+'</span>':'') : ' &middot; salvage credits sweep: not yet run since restart')
+      + (dg.by_account && dg.by_account.length ? '<br>Credits in the ledger by account: '+esc(REUSE_ACCTS.map(a=>a[0]).concat(dg.by_account.map(x=>x.account).filter(a=>!REUSE_ACCTS.some(b=>b[0]===a))).map(acc=>{ const p=dg.by_account.find(x=>x.account===acc&&x.status==='pending'), ac=dg.by_account.find(x=>x.account===acc&&x.status!=='pending'); const lbl=(REUSE_ACCTS.find(b=>b[0]===acc)||[acc,acc])[1]; return lbl+': pending '+(p?p.n+' ('+fmt(p.kg,1)+' kg, last '+_dm(p.last_day)+')':'0')+' · accepted '+(ac?ac.n+' (last '+_dm(ac.last_day)+')':'0'); }).join(' · ')) : '')
       + (dg.sweep_in_flight?' &middot; <i>a feed sweep is running in the background &mdash; this list refreshes itself when it finishes</i>':'')
       + ' <span id="rcpRefreshing" style="display:none;color:var(--amber)">&#8635; refreshing&hellip;</span></div>';
   }
