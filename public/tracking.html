@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v59M</title>
+<title>Sunloc Tracking Suite v1.0 · build v59N</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v59M</p>
+      <p>Tracking Suite v1.0 · build v59N</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v59M</p>
+      <p>Tracking Suite v1.0 · build v59N</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -8643,7 +8643,7 @@ function _v51dRenderOverInv() {
       <td class="td-mono fw-bold">${r.batch}</td>
       <td>${r.customer||'—'}</td>
       <td class="td-mono" style="text-align:center">${_pmLabel(r.prodMonth)}</td>
-      <td class="td-mono" style="text-align:right" title="Gross produced (DPR actuals) — production context for the packed-basis excess; a batch can be legitimately produced but not yet packed">${r.producedL != null ? r.producedL.toFixed(2) : '—'}</td>
+      <td class="td-mono" style="text-align:right" title="${r.producedNote ? 'v59N: '+r.producedNote+' — this batch has no DPR production of its own' : 'Gross produced (DPR actuals) — production context for the packed-basis excess; a batch can be legitimately produced but not yet packed'}">${r.producedL != null ? r.producedL.toFixed(2) : '—'}${r.producedNote ? '<div style="font-size:9px;font-weight:400;color:var(--text3)">share of parent</div>' : ''}</td>
       <td class="td-mono" style="text-align:right">${r.packed.toFixed(2)}</td>
       <td class="td-mono" style="text-align:right" title="Received ${r.received.toFixed(2)}L + Pending ${r.pending.toFixed(2)}L">${r.invoiced.toFixed(2)}</td>
       <td class="td-mono fw-bold" style="text-align:right;color:#dc2626" title="${ranged ? 'Over-invoiced within the selected invoice-date range (all-time excess '+r.excess.toFixed(2)+' L)' : 'All-time: invoiced − packed'}">${ranged ? r._rx.excess.toFixed(2)+'<div style="font-size:10px;font-weight:400;color:var(--text3)">all-time '+r.excess.toFixed(2)+'</div>' : r.excess.toFixed(2)}${r.legacyRemark?`<div style="font-size:10px;font-weight:400;color:#047857;white-space:normal;text-align:right" title="v53P: re-batched legacy stock ships under this batch but is not its packed production">♻ ${r.legacyRemark}</div>`:''}</td>

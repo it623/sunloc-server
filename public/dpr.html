@@ -499,7 +499,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v59M</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v59N</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -698,7 +698,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px">
       <div class="field-grp" style="margin:0;min-width:160px">
         <label>REPORT DATE</label>
-        <input type="date" id="plant-date" style="background:var(--s2);border:2px solid var(--b2);border-radius:4px;color:var(--t1);padding:5px 8px;font-size:12px;font-weight:700" oninput="renderPlantReport()">
+        <input type="date" id="plant-date" style="background:var(--s2);border:2px solid var(--b2);border-radius:4px;color:var(--t1);padding:5px 8px;font-size:12px;font-weight:700" onchange="renderPlantReport()">
       </div>
       <div style="display:flex;border:1px solid var(--b2);border-radius:5px;overflow:hidden;align-self:flex-end">
         <button id="pr-scope-month" onclick="_dprCumulativeMode=false;document.getElementById('pr-scope-month').style.background='var(--cyan)';document.getElementById('pr-scope-cumul').style.background='';renderPlantReport()"
@@ -4671,6 +4671,7 @@ function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap, serverCum
   Object.keys(FLOORS).forEach(fl => {
     parsedCache[fl] = {};
     floorDateProd[fl] = {};
+    if (serverCum) return;   // v59N: the grid pre-pass feeds only the offline / fallback path
     const flDates = (allDatesMap[fl] || []).filter(_scopeFilter);
     const flMachines = FLOORS[fl].machines || [];
     flDates.forEach(d => {
@@ -4839,10 +4840,27 @@ function getPlantReportData(selectedDate) {
   return { rows, totals, allDates };
 }
 
+// v59N (Ishan, 4 Nov 2026 — "plant report taking too long"): three things stacked up. (1) The date box fired a
+// full render on every keystroke / arrow (oninput) and nothing cancelled the earlier ones — several renders
+// raced and the last to finish won, stale or not. (2) When the cumulative call was slow or timed out (8 s), the
+// FALLBACK range sync ran BEFORE anything was drawn: "Up To This Month" set its scope to 2000-01-01, i.e. every
+// floor-day not in localStorage (~600 requests in batches of 6), capped only by a 12 s race that did not cancel
+// the requests — so the worst case sat on "Loading…" for ~20 s and the leftovers competed with the next render.
+// (3) The localStorage pre-pass parsed every cached day blob in scope even when the server cumulative had
+// arrived and the result was never used. Now: one render at a time (a newer render aborts the older one's
+// fetches and the older one never paints); the report draws as soon as the day blob + cumulative are in; the
+// fallback sync is bounded to the month on screen and runs in the background, re-rendering once when it is
+// done; the pre-pass runs only on the fallback path.
+let _plantRenderSeq = 0, _plantAbort = null;
 async function renderPlantReport(){
   restrictDateToMonth('plant-date');
   const selectedDate = document.getElementById('plant-date')?.value || today();
   const el = document.getElementById('plant-report-output');
+  const _mySeq = ++_plantRenderSeq;
+  try { if (_plantAbort) _plantAbort.abort(); } catch (_) {}
+  const _ac = _plantAbort = new AbortController();
+  const _stale = () => _mySeq !== _plantRenderSeq;
+  const _sig = ms => (typeof AbortSignal.any === 'function') ? AbortSignal.any([_ac.signal, AbortSignal.timeout(ms)]) : AbortSignal.timeout(ms);
   // v41ZF #1: the Plant Report was reportedly not rendering under admin login, with no visible
   // reason. Nothing in this path is role-dependent, so log entry state to surface the real cause
   // (missing container, fetch failure, etc.) instead of any silent return.
@@ -4861,13 +4879,13 @@ async function renderPlantReport(){
   // slower of the two, not their sum. The cumulative fetch below consumes _cumPromise57u.
   const _scopeFrom45x = _dprCumulativeMode ? '' : (_v50eScopeMonth(selectedDate) + '-01');   // v50E
   const _cumPromise57u = serverUrl
-    ? fetch(serverUrl + '/api/dpr/plant-cum?to=' + selectedDate + (_scopeFrom45x ? ('&from=' + _scopeFrom45x) : ''), { signal: AbortSignal.timeout(8000) }).catch(e => { console.warn('[plant-report] server cum unavailable — falling back to local grid:', e?.message); return null; })
+    ? fetch(serverUrl + '/api/dpr/plant-cum?to=' + selectedDate + (_scopeFrom45x ? ('&from=' + _scopeFrom45x) : ''), { signal: _sig(15000) }).catch(e => { console.warn('[plant-report] server cum unavailable — falling back to local grid:', e?.message); return null; })
     : Promise.resolve(null);
   const _t0_57u = Date.now();
   if(serverUrl){
     try {
       const r = await fetch(serverUrl + `/api/dpr/plant-report/${selectedDate}`, {
-        signal: AbortSignal.timeout(6000)
+        signal: _sig(15000)   // v59N
       });
       if(r.ok){
         const j = await r.json();
@@ -4903,22 +4921,20 @@ async function renderPlantReport(){
     } catch(e) { console.warn('[plant-report] server cum unavailable — falling back to local grid:', e?.message); }
     console.log('[renderPlantReport] server data in ' + (Date.now() - _t0_57u) + 'ms (day blob + cumulative, parallel)');
   }
+  if (_stale()) return;   // v59N: a newer render has taken over
 
   // v41ZD #3: cumulative totals were built only from days already in localStorage, so on a fresh
   // session (or a different device) prior days were missing and the cumulative per-machine values
   // under-counted. Sync the full scope range from the server first so the cumulative is complete.
   // v45X: only needed for the FALLBACK path — with server cum in hand, skip the heavy range sync.
-  if (serverUrl && !_serverCum45x) {
-    const _scopeFrom = _dprCumulativeMode ? '2000-01-01' : (_v50eScopeMonth(selectedDate) + '-01');   // v50E
-    // v41ZF #1: wrap with a hard timeout. If syncDateRangeFromServer hangs (slow/large range), the
-    // report previously could sit on "Loading" indefinitely — which presents exactly as "doesn't
-    // show up". Time-box it; the cumulative still renders from whatever is already cached locally.
-    try {
-      await Promise.race([
-        syncDateRangeFromServer(Object.keys(FLOORS), _scopeFrom, selectedDate),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('range-sync timeout')), 12000))
-      ]);
-    } catch(e) { console.warn('[plant-report] range sync skipped:', e?.message); }
+  if (serverUrl && !_serverCum45x && !window._plantRangeSyncing) {
+    // v59N: fallback only — draw NOW from what is cached, sync the month on screen in the background (never the
+    // whole history), and re-render once when it lands if this is still the current render.
+    const _scopeFrom = _v50eScopeMonth(selectedDate) + '-01';
+    window._plantRangeSyncing = true;
+    syncDateRangeFromServer(Object.keys(FLOORS), _scopeFrom, selectedDate)
+      .catch(e => console.warn('[plant-report] background range sync failed:', e?.message))
+      .finally(() => { window._plantRangeSyncing = false; if (!_stale()) renderPlantReport(); });
   }
 
   // ── Step 3: Build allDatesMap for cumulative — use all localStorage dates per floor ──
@@ -5024,6 +5040,7 @@ async function renderPlantReport(){
       <td class="r" style="font-family:var(--mono);font-weight:700;color:rgba(240,192,96,0.7)">—</td>
     </tr>`;
 
+  if (_stale()) return;   // v59N: never paint a superseded render
   el.innerHTML = `
     <div style="font-size:11px;color:var(--t3);font-weight:700;margin-bottom:8px;font-family:var(--fc);letter-spacing:.5px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
       <span>📅 Daily: <strong style="color:var(--t1)">${selectedDate}</strong></span>

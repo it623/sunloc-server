@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v59M';
+const APP_BUILD = 'v59N';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -10594,6 +10594,40 @@ async function _v46k_loadSplitFamilies() {
       // v52X: inferred children are KEPT even at boxed 0 — the applier reduces the parent by an
       // own-gross child's own figure regardless of labels, and a boxed-0 no-gross child simply
       // receives nothing (harmless).
+      // ═══ v59N (Ishan, 4 Nov 2026): GROSS UP each child's share by the family's A-grade ═══════════════════
+      // A child's labels are PACKED quantity (post-AIM, post-salvage). Carving exactly that much gross out of
+      // the parent left the parent carrying the whole family's AIM loss and the child reading as if it had
+      // produced only what it packed. Ishan's rule: gross 12 L at 95 % A-grade packs 11.4 L; split 4 / 4 / 3.4
+      // → each part's gross = its share ÷ 0.95 = 4.21 / 4.21 / 3.58. The family's A-grade is the AIM figure the
+      // reports use — AIM out ÷ (AIM out + AIM salvage + AIM remelt) over every member — so the same loss
+      // ratio is applied to every part. Falls back to the plain label share when the family has no AIM
+      // scans yet (factor 1); the applier's guard still caps the children at the parent's gross.
+      try {
+        const _famBns = [...new Set(families.flatMap(f => [String(f.parentBatch).trim(), ...f.children.map(c => String(c.batch).trim())]))];
+        const _rootOf = {}; for (const f of families) { const r = String(f.parentBatch).trim().toUpperCase(); _rootOf[r] = r; for (const c of f.children) _rootOf[String(c.batch).trim().toUpperCase()] = r; }
+        if (_famBns.length) {
+          let ao, aw;
+          if (pgPool) {
+            ao = (await pgPool.query(`SELECT UPPER(s.batch_number) AS bn, COALESCE(SUM(${_v47gScanQtySql('s','l')}),0) AS q FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id=s.label_id WHERE s.batch_number = ANY($1) AND s.dept='aim' AND s.type='out' AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id) GROUP BY UPPER(s.batch_number)`, [_famBns])).rows;
+            aw = (await pgPool.query(`SELECT UPPER(batch_number) AS bn, COALESCE(SUM(qty),0) AS q FROM tracking_wastage WHERE batch_number = ANY($1) AND LOWER(dept)='aim' GROUP BY UPPER(batch_number)`, [_famBns])).rows;
+          } else {
+            const ph = _famBns.map(() => '?').join(',');
+            ao = db.prepare(`SELECT UPPER(s.batch_number) AS bn, COALESCE(SUM(${_v47gScanQtySql('s','l')}),0) AS q FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id=s.label_id WHERE s.batch_number IN (${ph}) AND s.dept='aim' AND s.type='out' AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id) GROUP BY UPPER(s.batch_number)`).all(..._famBns);
+            aw = db.prepare(`SELECT UPPER(batch_number) AS bn, COALESCE(SUM(qty),0) AS q FROM tracking_wastage WHERE batch_number IN (${ph}) AND LOWER(dept)='aim' GROUP BY UPPER(batch_number)`).all(..._famBns);
+          }
+          const famOut = {}, famWaste = {};
+          for (const r of (ao || [])) { const root = _rootOf[r.bn]; if (root) famOut[root] = (famOut[root] || 0) + (parseFloat(r.q) || 0); }
+          for (const r of (aw || [])) { const root = _rootOf[r.bn]; if (root) famWaste[root] = (famWaste[root] || 0) + (parseFloat(r.q) || 0); }
+          for (const f of families) {
+            const root = String(f.parentBatch).trim().toUpperCase();
+            const out = famOut[root] || 0, waste = famWaste[root] || 0;
+            if (!(out > 0)) { f.aGrade = null; continue; }
+            const a = Math.min(1, Math.max(0.5, out / (out + waste)));
+            f.aGrade = +(a * 100).toFixed(2);
+            for (const c of f.children) if (c.boxed > 0) { c.packedShare = c.boxed; c.boxed = +(c.boxed / a).toFixed(3); }
+          }
+        }
+      } catch (e) { console.warn('[v59N] A-grade gross-up skipped (plain label shares kept):', e.message); }
     }
   } catch (e) { console.warn('[v52W] child label-sum refinement failed (boxes×pack figures kept):', e.message); }
 
@@ -10661,8 +10695,14 @@ async function _v59lDeemPackIn(batchNumber, tag, who, ts, opts) {
   const dry = !!(opts && opts.dry);
   const bn = String(batchNumber || '').trim();
   if (!bn) return { batch: bn, deemed: 0, skipped: 'no batch' };
-  const q = async (sql, params) => pgPool ? (await pgPool.query(sql, params)).rows
-                                         : db.prepare(sql.replace(/\$\d+/g, '?')).all(...(params || []));
+  // v59N: every statement is tagged so a driver error names the step ("[rec] COALESCE types …"), and the
+  // flag / count columns are compared as TEXT (CAST, valid on PG and SQLite alike) so a live column that an old
+  // migration left as text can never break the eligibility test again (3 Nov: "COALESCE types text and integer").
+  const q = async (sql, params, step) => {
+    try { return pgPool ? (await pgPool.query(sql, params)).rows : db.prepare(sql.replace(/\$\d+/g, '?')).all(...(params || [])); }
+    catch (e) { throw new Error('[' + (step || 'sql') + '] ' + e.message); }
+  };
+  const OFF = col => `(${col} IS NULL OR CAST(${col} AS TEXT) IN ('0','','false','f'))`;   // flag not set
   const opLike = 'deemed-pack:' + tag + ':%';
   if (!dry) {
     try {
@@ -10671,11 +10711,11 @@ async function _v59lDeemPackIn(batchNumber, tag, who, ts, opts) {
     } catch (e) {}
   }
   // dispatched: records (boxes, qty) + live dispatch-out scans by distinct label
-  const rec = (await q(`SELECT COALESCE(SUM(boxes),0) AS b, COALESCE(SUM(qty),0) AS q FROM tracking_dispatch_records WHERE batch_number=$1`, [bn]))[0] || {};
+  const rec = (await q(`SELECT COALESCE(SUM(CAST(boxes AS REAL)),0) AS b, COALESCE(SUM(CAST(qty AS REAL)),0) AS q FROM tracking_dispatch_records WHERE batch_number=$1`, [bn], 'rec'))[0] || {};
   const dOut = (await q(`SELECT COUNT(DISTINCT s.label_id) AS b, COALESCE(SUM(${_v47gScanQtySql('s','l')}),0) AS q
                            FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id=s.label_id
                           WHERE s.batch_number=$1 AND s.dept='dispatch' AND s.type='out' AND s.label_id NOT LIKE 'recon-%'
-                            AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)`, [bn]))[0] || {};
+                            AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)`, [bn], 'dispatch-out'))[0] || {};
   const dispBoxes = (parseInt(rec.b, 10) || 0) + (parseInt(dOut.b, 10) || 0);
   const dispQty = (parseFloat(rec.q) || 0) + (parseFloat(dOut.q) || 0);
   // packed: live packing-in — real boxes (distinct label) and quantity (recon rows included)
@@ -10683,32 +10723,32 @@ async function _v59lDeemPackIn(batchNumber, tag, who, ts, opts) {
                               COALESCE(SUM(${_v47gScanQtySql('s','l')}),0) AS q
                          FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id=s.label_id
                         WHERE s.batch_number=$1 AND s.dept='packing' AND s.type='in'
-                          AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)`, [bn]))[0] || {};
+                          AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)`, [bn], 'packed'))[0] || {};
   const packedBoxes = parseInt(pk.b, 10) || 0, packedQty = parseFloat(pk.q) || 0;
   let boxDeficit = dispBoxes - packedBoxes, qtyDeficit = dispQty - packedQty;
   if (boxDeficit <= 0) return { batch: bn, deemed: 0, dispBoxes, packedBoxes, dispQty: +dispQty.toFixed(2), packedQty: +packedQty.toFixed(2), skipped: 'no box shortfall' };
   // candidates: live blue labels past PI (or AIM for an unprinted batch) with no live packing-in
   const hasPi = ((await q(`SELECT 1 AS x FROM tracking_scans s WHERE s.batch_number=$1 AND s.dept='pi' AND s.type='out'
-                             AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id) LIMIT 1`, [bn])).length > 0);
+                             AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id) LIMIT 1`, [bn], 'has-pi')).length > 0);
   const outDept = hasPi ? 'pi' : 'aim';
-  const cands = await q(`SELECT l.id, l.label_number, COALESCE(l.qty,0) AS qty
+  const cands = await q(`SELECT l.id, l.label_number, COALESCE(CAST(l.qty AS REAL),0) AS qty
                            FROM tracking_labels l
-                          WHERE l.batch_number=$1 AND COALESCE(l.voided,0)=0 AND COALESCE(l.is_orange,0)=0 AND COALESCE(l.label_number,0)<>0
+                          WHERE l.batch_number=$1 AND ${OFF('l.voided')} AND ${OFF('l.is_orange')} AND COALESCE(CAST(l.label_number AS TEXT),'') NOT IN ('','0')
                             AND EXISTS (SELECT 1 FROM tracking_scans o WHERE o.label_id=l.id AND o.dept=$2 AND o.type='out'
                                           AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=o.id))
                             AND NOT EXISTS (SELECT 1 FROM tracking_scans i WHERE i.label_id=l.id AND i.dept='packing' AND i.type='in'
                                           AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=i.id))
-                          ORDER BY l.label_number, l.id`, [bn, outDept]);
+                          ORDER BY CAST(l.label_number AS REAL), l.id`, [bn, outDept], 'candidates');
   // v59M: when nothing is eligible, say why — counts the panel shows so an empty result is explainable
   let diag = null;
   if (!cands.length) {
     try {
-      const d = (await q(`SELECT COUNT(*) FILTER (WHERE COALESCE(l.voided,0)=0 AND COALESCE(l.is_orange,0)=0 AND COALESCE(l.label_number,0)<>0) AS live_blue,
+      const d = (await q(`SELECT COUNT(*) FILTER (WHERE ${OFF('l.voided')} AND ${OFF('l.is_orange')} AND COALESCE(CAST(l.label_number AS TEXT),'') NOT IN ('','0')) AS live_blue,
                                  COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM tracking_scans o WHERE o.label_id=l.id AND o.dept='pi' AND o.type='out')) AS pi_out_any,
                                  COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM tracking_scans o WHERE o.label_id=l.id AND o.dept='aim' AND o.type='out')) AS aim_out_any,
                                  COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM tracking_scans i WHERE i.label_id=l.id AND i.dept='packing' AND i.type='in')) AS pack_in_any
-                            FROM tracking_labels l WHERE l.batch_number=$1`, [bn]))[0] || {};
-      const sc = (await q(`SELECT s.dept, s.type, COUNT(*) AS n, COUNT(r.reversed_scan_id) AS rev FROM tracking_scans s LEFT JOIN tracking_scan_reversals r ON r.reversed_scan_id=s.id WHERE s.batch_number=$1 GROUP BY s.dept, s.type ORDER BY 1,2`, [bn]));
+                            FROM tracking_labels l WHERE l.batch_number=$1`, [bn], 'diag-labels'))[0] || {};
+      const sc = (await q(`SELECT s.dept, s.type, COUNT(*) AS n, COUNT(r.reversed_scan_id) AS rev FROM tracking_scans s LEFT JOIN tracking_scan_reversals r ON r.reversed_scan_id=s.id WHERE s.batch_number=$1 GROUP BY s.dept, s.type ORDER BY 1,2`, [bn], 'diag-scans'));
       diag = { labels: d, scans: sc.map(x => x.dept + ':' + x.type + ' ' + x.n + (Number(x.rev) ? ' (' + x.rev + ' reversed)' : '')).join(', ') };
     } catch (e) { diag = { error: e.message }; }
   }
@@ -16210,6 +16250,7 @@ app.post('/api/dpr/save', async (req, res) => {
       logAudit(req.body.userName || 'dpr', String(req.headers['x-user-role'] || ''), 'dpr', 'DPR_SAVE',
         `${floor} ${date} — machines with data per shift [${_shifts51b.join(', ')}]${_rejTxt}${_device59a ? ' · device ' + _device59a : ''}${_merge59a ? ' · MERGED ' + _merge59a.applied.length + ' slot(s) onto rev ' + _merge59a.serverRev : ''}`.slice(0, 900), req.ip);
     } catch (_) {}
+    try { _v59nPlantCumBust(); } catch (_) {}   // v59N
     // v40 P18.14i Fix 2: include any gate rejections so client can alert the operator
     const rejected = res._dprRejected || [];
     // v56U (Ishan, 23 Sep — 26ZH098): a refused line must not live on in the day's record. The JSON
@@ -16280,6 +16321,7 @@ app.post('/api/dpr/restore-day', async (req, res) => {
       if (L.before_record_json) db.prepare(`INSERT INTO dpr_records (floor, date, data_json, rev) VALUES (?, ?, ?, 1) ON CONFLICT(floor, date) DO UPDATE SET data_json = excluded.data_json, saved_at = datetime('now'), rev = COALESCE(rev, 0) + 1`).run(L.floor, L.date, L.before_record_json);
     }
     try { await warmActualsCache(); } catch (_) {}
+    try { _v59nPlantCumBust(); } catch (_) {}   // v59N
     logAudit(req.body.userName || 'admin', 'admin', 'dpr', 'DPR_RESTORE_DAY', `${L.floor} ${L.date} restored to the state before save #${logId} (${L.saved_at} by ${L.saved_by || '?'}): ${rows.length} rows, ${tot(rows)} L`, req.ip);
     res.json({ ok: true, floor: L.floor, date: L.date, rows: rows.length, total: tot(rows) });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
@@ -16315,12 +16357,20 @@ app.get('/api/dpr/plant-report/:date', async (req, res) => {
 // blob was never synced to this device, or (c) a machine produced outside the FLOORS master.
 // Returns per-machine { total, days, dates[] } for date-range [from..to] (from optional = all-time);
 // only days with production count. The client derives floor/plant day-unions from the dates arrays.
+// v59N: a 30 s in-memory cache for the plant cumulative, keyed from|to and dropped on every DPR save / restore,
+// so the many renders a planner triggers in a minute (date arrows, This Month ↔ Up To This Month, three floors'
+// tabs) cost one aggregate query, not one each — the response is identical to a cold read within the window.
+const _v59nPlantCum = new Map();
+function _v59nPlantCumBust() { _v59nPlantCum.clear(); }
 app.get('/api/dpr/plant-cum', async (req, res) => {
   try {
     const to = String(req.query.to || '').slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(to)) return res.status(400).json({ ok: false, error: 'to=YYYY-MM-DD required' });
     const fromRaw = String(req.query.from || '');
     const from = /^\d{4}-\d{2}-\d{2}$/.test(fromRaw) ? fromRaw.slice(0, 10) : null;
+    const _ck = (from || '') + '|' + to; const _hit = _v59nPlantCum.get(_ck);
+    if (_hit && Date.now() - _hit.t < 30000) return res.json(Object.assign({}, _hit.body, { cached: true }));
+    res.json = ((orig) => function (body) { try { if (body && body.ok) _v59nPlantCum.set(_ck, { t: Date.now(), body }); } catch (_) {} return orig.call(this, body); })(res.json);
     const _t0cum57u = Date.now();   // v57U: slow-response log
     let rows;
     if (pgPool) {
@@ -17029,7 +17079,12 @@ app.get('/api/invoice/over-invoiced', async (req, res) => {
         { const _still = _bns.map(b => String(b).trim().toUpperCase()).filter(k => !pmMap[k]); if (_still.length) { const lm = await _v53uLegacyMonths(_still); for (const k of Object.keys(lm)) pmMap[k] = lm[k]; } }
         rows.forEach(r => { const k = String(r.batch).trim().toUpperCase();
           r.prodMonth = pmMap[k] || null;
-          r.producedL = prMap[k] != null ? prMap[k] : null; });   // v51H: gross produced (DPR actuals) — E-context beside the packed-basis excess
+          // v59N: a split / re-customer CHILD has no production_actuals of its own — its share of the parent's gross
+          // (apportioned at the family A-grade, v46K/v59N) is what the cumulative gross map carries; read that so the
+          // Produced column is never "—" for a child. The excess itself stays invoiced − PACKED (the v49C definition).
+          const _gv = _grossByBatch ? (_grossByBatch[r.batch] != null ? _grossByBatch[r.batch] : _grossByBatch[k]) : null; const _g = (_gv != null) ? Math.round(Number(_gv) * 100) / 100 : null;
+          r.producedL = prMap[k] != null ? prMap[k] : _g;
+          if (prMap[k] == null && _g != null) r.producedNote = 'share of the parent batch\'s gross, apportioned at the family A-grade'; });
       }
     } catch (e) { console.warn('[v51G over-invoiced prodMonth] failed:', e.message); }
     res.json({ ok: true, rows, unattributed });
