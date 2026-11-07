@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v59N</title>
+<title>GPR · build v59P</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -421,8 +421,8 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v59N</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v59N</div>
+    <h1>GPR<span class="vpill">v59P</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v59P</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -442,7 +442,7 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v59N</span></div>
+  <div class="nbrand">GPR<span class="vpill">v59P</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <span style="display:inline-flex;align-items:center;gap:5px;margin-right:10px;padding:2px 6px;border:1px solid #3949ab;border-radius:6px;background:#232b6e" title="Production month — the month turns at 06:00 IST on the 1st (same rule as DPR, Tracking and Planning). Every list, picker and period view is scoped to this month's batch cohort; stock balances and pending receipts always show the live position.">
@@ -564,6 +564,8 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
             <tr class="dkey"><td>Actual issued (L) *</td><td><input id="tc_actual" type="number" inputmode="decimal" oninput="this.dataset.manual='1';drawTankSide('tc')"><div id="tc_calcL" style="font-size:10.5px;color:var(--t3);margin-top:2px"></div></td></tr>
             <input type="hidden" id="tc_vmode" value="l">   <!-- v58F item 5: the virgin draw is always entered in LITRES of MMT solution; kg is derived -->
             <tr class="dkey" id="tc_mmtLrow"><td>MMT solution drawn (L) *</td><td><input id="tc_mmtL" type="number" inputmode="decimal" oninput="ttCalc('tc')"><div id="tc_mmtLnote" style="font-size:10.5px;color:var(--t3);margin-top:2px"></div></td></tr>
+            <!-- v59P (Ishan, 7 Nov): a tank may draw from more than one charge — extra lines, each priced at its own charge's concentration -->
+            <tr id="tc_mmtXrow"><td style="vertical-align:top">Also draw from<div style="font-size:10px;color:var(--t3);font-weight:400">another charge</div></td><td><div id="tc_mmtX"></div><a href="javascript:void(0)" onclick="ttAddDraw('tc')" style="font-size:11px">+ draw from another charge</a></td></tr>
             <tr><td>Virgin gelatine (kg) <span style="font-size:10px;color:var(--t3)">auto</span></td><td><input id="tc_virgin" type="number" inputmode="decimal" readonly style="background:var(--s3)" oninput="ttCalc('tc')"></td></tr>
             <tr><td>Colour + TiO₂ (kg)</td><td><input id="tc_colourkg" type="number" inputmode="decimal" oninput="this.dataset.manual='1';ttCalc('tc')" placeholder="auto from colourants"></td></tr>
             <tr><td>FG remelt (kg)</td><td><input id="tc_fgremelt" type="number" inputmode="decimal" oninput="ttCalc('tc')"></td></tr>
@@ -612,6 +614,8 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
             <tr class="dkey"><td>Actual issued (L) *</td><td><input id="tb_actual" type="number" inputmode="decimal" oninput="this.dataset.manual='1';drawTankSide('tb')"><div id="tb_calcL" style="font-size:10.5px;color:var(--t3);margin-top:2px"></div></td></tr>
             <input type="hidden" id="tb_vmode" value="l">   <!-- v58F item 5: the virgin draw is always entered in LITRES of MMT solution; kg is derived -->
             <tr class="dkey" id="tb_mmtLrow"><td>MMT solution drawn (L) *</td><td><input id="tb_mmtL" type="number" inputmode="decimal" oninput="ttCalc('tb')"><div id="tb_mmtLnote" style="font-size:10.5px;color:var(--t3);margin-top:2px"></div></td></tr>
+            <!-- v59P (Ishan, 7 Nov): a tank may draw from more than one charge — extra lines, each priced at its own charge's concentration -->
+            <tr id="tb_mmtXrow"><td style="vertical-align:top">Also draw from<div style="font-size:10px;color:var(--t3);font-weight:400">another charge</div></td><td><div id="tb_mmtX"></div><a href="javascript:void(0)" onclick="ttAddDraw('tb')" style="font-size:11px">+ draw from another charge</a></td></tr>
             <tr><td>Virgin gelatine (kg) <span style="font-size:10px;color:var(--t3)">auto</span></td><td><input id="tb_virgin" type="number" inputmode="decimal" readonly style="background:var(--s3)" oninput="ttCalc('tb')"></td></tr>
             <tr><td>Colour + TiO₂ (kg)</td><td><input id="tb_colourkg" type="number" inputmode="decimal" oninput="this.dataset.manual='1';ttCalc('tb')" placeholder="auto from colourants"></td></tr>
             <tr><td>FG remelt (kg)</td><td><input id="tb_fgremelt" type="number" inputmode="decimal" oninput="ttCalc('tb')"></td></tr>
@@ -1497,7 +1501,7 @@ function renderSheet(){
         + `<td class="mono">${esc(r.colour_code||'—')}</td>`
         + `<td class="num">${fmt(r.actual_l,0)}</td>`
         + `<td class="num">${fmt(r.total_charged_kg,1)}</td>`
-        + `<td class="mono">${esc(r.mmt_ref||'—')}</td>`
+        + `<td class="mono">${esc(r.mmt_refs||r.mmt_ref||'—')}</td>`
         + `<td><b style="font-size:10.5px;color:${scolr}">${slabel}</b>${r.is_under_fill?' <span class="badge warn">Under-fill</span>':''}</td>`
         + `<td style="white-space:nowrap" onclick="event.stopPropagation()">${lcActions(r)}</td></tr>`;
     });
@@ -1526,7 +1530,7 @@ function openSheetFull(){
     grp.forEach(r=>{ const [,slabel] = lcStage(r);
       body += '<tr><td>'+esc(_dm(r.production_day)||'—')+'</td><td><b>'+esc(String(r.batch_number||'').toUpperCase())+'</b></td><td>'+esc(r.tt_number||'')+'</td><td>'+esc((r.side||'').toUpperCase())+(r.seq_index?' #'+r.seq_index:'')+'</td>'
         + '<td>'+esc(r.pc_code||'—')+'</td><td>'+esc(r.colour_name||'—')+'</td><td>'+esc(r.colour_code||'—')+'</td><td class="n">'+fmt(r.actual_l,0)+'</td><td class="n">'+fmt(r.total_charged_kg,1)+'</td><td class="n">'+fmt(r.virgin_kg,1)+'</td>'
-        + '<td>'+esc(r.mmt_ref||'—')+'</td><td>'+esc(slabel)+(r.is_under_fill?' · UNDER-FILL':'')+'</td><td>'+esc(_v58dDt(r.created_at))+'</td><td>'+esc(r.issued_at?_v58dDt(r.issued_at):'—')+'</td><td>'+esc(r.created_by||'')+'</td></tr>'; });
+        + '<td>'+esc(r.mmt_refs||r.mmt_ref||'—')+'</td><td>'+esc(slabel)+(r.is_under_fill?' · UNDER-FILL':'')+'</td><td>'+esc(_v58dDt(r.created_at))+'</td><td>'+esc(r.issued_at?_v58dDt(r.issued_at):'—')+'</td><td>'+esc(r.created_by||'')+'</td></tr>'; });
     body += '</tbody></table>';
   });
   const css = 'body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:11.5px;color:#1f2937;margin:18px}h1{font-size:18px;margin:0 0 2px}.sub{color:#6b7280;margin-bottom:14px}h2{font-size:13px;margin:16px 0 4px;padding:5px 8px;background:#f3f4f6;border-left:4px solid #a8621f}h2 small{font-weight:400;color:#6b7280;float:right}table{border-collapse:collapse;width:100%}th,td{border:1px solid #e5e7eb;padding:3px 6px;text-align:left;white-space:nowrap}th{background:#f9fafb;font-size:10.5px;text-transform:uppercase;letter-spacing:.4px;position:sticky;top:0}td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}tr:nth-child(even) td{background:#fcfcfd}@media print{h2{break-after:avoid}table{font-size:9.5px}th{position:static}}';
@@ -1542,7 +1546,7 @@ function statusBadge(s){
 }
 function exportSheet(){
   gprExport({
-    rows: SHEET_ROWS, title:'GPR — transfer tank sheet',
+    rows: SHEET_ROWS.map(r=>Object.assign({}, r, { mmt_ref: r.mmt_refs||r.mmt_ref })), title:'GPR — transfer tank sheet',   // v59P: every charge the tank draws from
     context: [val('sh_from')&&(_dm(val('sh_from'))+' → '+_dm(val('sh_to'))), val('sh_batch')&&('batch '+val('sh_batch')),
               val('sh_machine')&&('machine '+val('sh_machine'))].filter(Boolean).join(' · '),
     sheet:'TT sheet', file:'gpr_tt_sheet', totals:true,
@@ -1774,7 +1778,7 @@ async function mmtOpenEdit(id){
   try{
     const from = new Date(Date.now()+330*60000-4*86400000).toISOString().slice(0,10);
     const d = await api('/api/gpr/tt-sheet?from='+from+'&floors='+encodeURIComponent(fl.join(',')));
-    tanks = ((d && d.ok && d.rows) || []).filter(t => !t.issued_at && (!t.mmt_ref || t.mmt_ref===c.mmt_ref))
+    tanks = ((d && d.ok && d.rows) || []).filter(t => !t.issued_at)   // v59P: a tank already on another charge may take this one as a further draw
       .sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
   }catch(e){}
   window._MME = { c, rem, tanks };
@@ -1828,8 +1832,8 @@ async function _v58dLoadDraws(ref, elId){
   draws.forEach(t=>{ n++;
     h += '<tr><td style="color:var(--t3)">'+n+'</td><td class="mono"><b>'+esc(String(t.tt_number||('TT#'+t.tt_id)).replace(/^TT-/,''))+'</b></td><td class="mono">'+esc(t.batch_number||'')+'</td><td class="mono" style="font-size:11px">'+esc(t.pc_code||'—')+'</td><td>'+esc(t.machine_id||'')+'</td>'
       + '<td><span class="sdtag sd-'+esc(t.side)+'">'+esc(String(t.side||'').toUpperCase())+'</span></td><td class="mono" style="font-size:11px">'+(t.seq_index!=null?esc(t.seq_index+(t.seq_total?'/'+t.seq_total:'')):'—')+'</td>'
-      + '<td class="num"><b>'+fmt(t.drawn_l,0)+'</b></td><td class="num">'+fmt(t.virgin_kg,1)+'</td><td class="num" style="color:var(--t3)">'+fmt(t.actual_l,0)+'</td>'
-      + '<td style="font-size:11px">'+esc(t.status||'')+(t.is_under_fill?' <span class="badge" style="background:var(--amber-l);color:var(--amber)">UNDER FILL</span>':'')+'</td>'
+      + '<td class="num"><b>'+fmt(t.drawn_l,0)+'</b></td><td class="num">'+fmt(t.virgin_kg,1)+(t.also_from?' <span style="color:var(--t3);font-size:10px" title="this tank also draws from '+esc(t.also_from)+' — tank total '+fmt(t.tank_virgin_kg,1)+' kg">+ '+esc(t.also_from)+'</span>':'')+'</td><td class="num" style="color:var(--t3)">'+fmt(t.actual_l,0)+'</td>'
+      + '<td style="font-size:11px">'+esc(t.status||'')+(t.is_under_fill?' <span class="badge" style="background:var(--amber-l);color:var(--amber)">UNDER FILL</span>':'')+'</td>'   /* v59P: also_from */
       + '<td class="mono" style="font-size:11px;white-space:nowrap">'+esc(t.allocated_at?_v58dDt(t.allocated_at):'—')+'</td><td class="mono" style="font-size:11px;white-space:nowrap">'+esc(_v58dDt(t.prepared_at))+'</td>'
       + '<td class="mono" style="font-size:11px;white-space:nowrap">'+esc(t.issued_at?_v58dDt(t.issued_at):'—')+'</td><td style="font-size:11px">'+esc(t.by||'')+'</td></tr>'; });
   pend.forEach(a=>{ n++;
@@ -2547,7 +2551,7 @@ function renderTtCards(){
       const p = _istParts(r.created_at), l = _istParts(r.issued_at);
       h += '<tr><td class="mono">'+esc(bn)+'</td><td class="mono"><b>'+esc(String(r.tt_number||'').replace(/^TT-/,''))+'</b></td>'
         + '<td><span class="sdtag sd-'+esc(r.side)+'">'+esc(String(r.side).toUpperCase())+'</span></td><td>'+esc(r.machine_id||'')+'</td>'
-        + '<td class="mono" style="font-size:11px">'+esc(r.mmt_ref||'—')+'</td>'
+        + '<td class="mono" style="font-size:11px">'+esc(r.mmt_refs||r.mmt_ref||'—')+'</td>'
         + '<td class="mono" style="font-size:11px">'+(p?esc(p.date+' '+p.shift+' '+p.time):'—')+'</td>'
         + '<td class="mono" style="font-size:11px">'+(l?esc(l.date+' '+l.time):'—')+'</td>'
         + '<td>'+stat(r)+'</td>'
@@ -3302,7 +3306,7 @@ function ttResetForBatch(bn){
   ['tc','tb'].forEach(p=>{
     ['_colcode','_cap','_planned','_actual','_seqtotal','_virgin','_mmtL','_colourkg','_fgremelt','_salvage','_cutting','_retsol','_visc','_temp','_reason','_tankcode','_xsreason','_xsnote'].forEach(f=>setVal(p+f,''));   // v58F: + MMT litres; v58M: + return solution
     const _rl = document.getElementById(p+'_retlines'); if(_rl) _rl.innerHTML = '';   // v58M
-    const mm = document.getElementById(p+'_mmt'); if(mm) mm.value='';
+    const mm = document.getElementById(p+'_mmt'); if(mm) mm.value=''; ttClearDraws(p);   // v59P
     const sn = document.getElementById(p+'_seqnote'); if(sn) sn.innerHTML='';
     // v56U: reuse lines, colourant grams and the hand-entered flags belong to the old batch too
     const rw = document.getElementById(p+'_reuse'); if(rw) rw.innerHTML = '';
@@ -3662,9 +3666,17 @@ function ttCalc(p){
   const _vm = (document.getElementById(p+'_vmode')||{}).value||'kg';
   if(_vm==='l' && virginEl){
     const Lm = num(p+'_mmtL');
-    virginEl.value = (Lm>0 && gPerL>0) ? +(Lm*gPerL).toFixed(2) : ''; virginEl.readOnly = true;
+    // v59P: the first line plus every "also draw from" line, each at its own charge's concentration
+    const X = _ttDrawLines(p).filter(x=>x.ref && x.l>0);
+    const cX = r => (window._MMT_CONC&&window._MMT_CONC[r]>0)?window._MMT_CONC[r]:gPerL;
+    const xKg = X.reduce((a,x)=>a+x.l*cX(x.ref),0);
+    const dupe = X.some(x=>x.ref===_ref57u) || X.some((x,i)=>X.findIndex(y=>y.ref===x.ref)!==i);
+    const totKg = (Lm>0 && gPerL>0 ? Lm*gPerL : 0) + xKg;
+    virginEl.value = totKg>0 ? +totKg.toFixed(2) : ''; virginEl.readOnly = true;
     const ln = document.getElementById(p+'_mmtLnote');
-    if(ln) ln.innerHTML = Lm>0 ? '= <b>'+fmt(Lm*gPerL,2)+' kg</b> virgin gelatine at '+(+gPerL.toFixed(3))+' kg/L'+(_concU?' ('+esc(_ref57u)+')':' <span style="color:var(--amber)">(no charge linked — seed concentration)</span>') : (_concU ? 'litres × '+(+_concU.toFixed(3))+' kg/L ('+esc(_ref57u)+')' : 'link the MMT charge above for its concentration');
+    if(ln) ln.innerHTML = (Lm>0 ? '= <b>'+fmt(Lm*gPerL,2)+' kg</b> virgin gelatine at '+(+gPerL.toFixed(3))+' kg/L'+(_concU?' ('+esc(_ref57u)+')':' <span style="color:var(--amber)">(no charge linked — seed concentration)</span>') : (_concU ? 'litres × '+(+_concU.toFixed(3))+' kg/L ('+esc(_ref57u)+')' : 'link the MMT charge above for its concentration'))
+      + (X.length ? '<br>+ '+X.map(x=>esc(x.ref)+' '+fmt(x.l,1)+' L = '+fmt(x.l*cX(x.ref),2)+' kg').join(' · ')+' &rarr; <b>'+fmt(totKg,2)+' kg</b> in all ('+fmt(Lm+X.reduce((a,x)=>a+x.l,0),1)+' L of MMT solution)' : '')
+      + (dupe ? '<br><span style="color:var(--red)">the same charge is listed twice &mdash; one line per charge</span>' : '');
   } else if(virginEl) virginEl.readOnly = false;
   if(_vm!=='l' && _concU && act && act.dataset.manual==='1' && virginEl && !(num(p+'_virgin')>0) && !(num(p+'_fgremelt')+num(p+'_salvage')+num(p+'_cutting')>0) && num(p+'_actual')>0){
     virginEl.value = (+(Math.max(0, num(p+'_actual') - solKg) * _concU).toFixed(2)) || '';
@@ -3693,6 +3705,38 @@ function ttCalc(p){
   drawTankSide(p);
 }
 function ttUseCalc(p){ const a = document.getElementById(p+'_actual'); if(a) delete a.dataset.manual; ttCalc(p); }
+/* ═══ v59P — one tank, several MMT charges ═══════════════════════════════════════════════════════════════
+   The first charge stays in "Link MMT charge" + "MMT solution drawn (L)"; every further charge is an extra line
+   (charge · litres). Virgin kg = Σ litres × that charge's concentration; the payload carries mmt_draws[] and the
+   server checks each line against ITS charge. Lines are per side (tc / tb). */
+function _ttDrawLines(p){
+  const box = document.getElementById(p+'_mmtX'); if(!box) return [];
+  return [...box.querySelectorAll('.ttdraw')].map(r=>({ ref: (r.querySelector('select')||{}).value||'', l: Number((r.querySelector('input')||{}).value||0)||0 }));
+}
+function ttAddDraw(p, ref, litres){
+  const box = document.getElementById(p+'_mmtX'); if(!box) return;
+  const main = document.getElementById(p+'_mmt');
+  const opts = main ? [...main.options].filter(o=>o.value).map(o=>'<option value="'+esc(o.value)+'">'+esc(o.textContent)+'</option>').join('') : '';
+  const row = document.createElement('div'); row.className='ttdraw'; row.style.cssText='display:flex;gap:6px;align-items:center;margin-bottom:4px';
+  row.innerHTML = '<select style="flex:1;min-width:0" onchange="ttCalc(\''+p+'\')"><option value="">— charge —</option>'+opts+'</select>'
+    + '<input type="number" inputmode="decimal" placeholder="L" style="width:74px" oninput="ttCalc(\''+p+'\')" title="litres of this charge\'s solution">'
+    + '<a href="javascript:void(0)" title="remove this line" style="color:var(--red);font-size:14px;text-decoration:none" onclick="this.parentNode.remove();ttCalc(\''+p+'\')">&times;</a>';
+  box.appendChild(row);
+  if(ref){ const sel=row.querySelector('select'); if(![...sel.options].some(o=>o.value===ref)) sel.insertAdjacentHTML('beforeend','<option value="'+esc(ref)+'">'+esc(ref)+'</option>'); sel.value=ref; }
+  if(litres>0) row.querySelector('input').value = litres;
+  ttCalc(p);
+}
+function ttClearDraws(p){ const box = document.getElementById(p+'_mmtX'); if(box) box.innerHTML=''; }
+// every (charge, litres) line of a side, first charge included — what the payload sends as mmt_draws
+function _ttAllDraws(p){
+  const C = (MASTERS && MASTERS.gpr_constants) || {}; const seed = Number(C.gelatineKgPerLitre ?? 0.33) || 0.33;
+  const conc = ref => (ref && window._MMT_CONC && window._MMT_CONC[ref] > 0) ? window._MMT_CONC[ref] : seed;
+  const out = [];
+  const r0 = val(p+'_mmt'), l0 = num(p+'_mmtL');
+  if(r0 && l0>0) out.push({ mmt_ref: r0, draw_l: +l0.toFixed(1), kg: +(l0*conc(r0)).toFixed(2), conc: conc(r0), alloc_id: (window._TTALLOC||{})[p] || null });
+  _ttDrawLines(p).forEach(x=>{ if(x.ref && x.l>0) out.push({ mmt_ref: x.ref, draw_l: +x.l.toFixed(1), kg: +(x.l*conc(x.ref)).toFixed(2), conc: conc(x.ref), alloc_id: null }); });
+  return out;
+}
 // v58E item 7: kg ↔ litres entry mode for the virgin draw
 function ttVmode(p){
   const vm = (document.getElementById(p+'_vmode')||{}).value||'kg';
@@ -3737,6 +3781,7 @@ function _sidePayload(p, side){
     return_solution_l: num(p+'_retsol'),
     tank_code: (val(p+'_tankcode')||'').trim().toUpperCase() || null,   // v57C → TT card
     alloc_id: (window._TTALLOC||{})[p] || null,   // v57L: the allocation this tank settles
+    mmt_draws: _ttAllDraws(p).map(d=>({ mmt_ref: d.mmt_ref, draw_l: d.draw_l, alloc_id: d.alloc_id })),   // v59P: every charge this tank draws from
     excess_reason: (document.getElementById(p+'_xs')||{}).style && document.getElementById(p+'_xs').style.display!=='none' ? val(p+'_xsreason') : null,
     excess_note: val(p+'_xsnote') || null,
     consume_from: document.getElementById(p+'_source').value,
@@ -3835,14 +3880,14 @@ async function _completeDualTtInner(){
     if(!d.ok){
       if(d.error==='DUPLICATE_TT'){ toast(side.toUpperCase()+' — '+(d.detail||'this tank was already saved'),'err'); delete (window._TT_SK||{})[p]; loadTtList(batch); loadMmtOptions(); if(created.length) renderDualCreated(created, true); return; }   // v59B
       // v57W: an exhausted charge is a stop, not a warning — say what to do, keep the form as typed
-      if(d.error==='CHARGE_EXHAUSTED'){ toast(side.toUpperCase()+' — '+(d.detail||'The linked MMT charge has no litres left. Take a new charge and link it.'),'err'); loadMmtOptions(); if(created.length) renderDualCreated(created, true); return; }
+      if(d.error==='CHARGE_EXHAUSTED'){ toast(side.toUpperCase()+' — '+(d.detail||'The linked MMT charge has no litres left.')+' Use "+ draw from another charge" for the balance.','err'); loadMmtOptions(); if(created.length) renderDualCreated(created, true); return; }   // v59P
       toast(side.toUpperCase()+': '+(d.detail || d.error || 'could not create the tank'),'err');
       if(created.length) renderDualCreated(created, true);
       return;
     }
     created.push({ tt_id:d.tt_id, tt_number:d.tt_number, side });
     if(d.warning) toast(side.toUpperCase()+' — '+d.warning,'');
-    if(d.mmt_exhausted) toast('MMT '+esc(val(p+'_mmt'))+' is now fully drawn and has closed — the next tank needs a new charge','');   // v57W
+    if(d.mmt_exhausted) toast('MMT '+esc((d.mmt_exhausted_refs||[val(p+'_mmt')]).join(', '))+' is now fully drawn and has closed — the next tank needs a new charge','');   // v57W; v59P: every closed charge
   }
   toast('Created ' + created.map(c=>c.tt_number).join(' + ') + ' — put each on HOLD below','ok'); loadSuggestions(true);
   window._TTALLOC = {}; ['tc','tb'].forEach(p=>{ const n=document.getElementById(p+'_allocnote'); if(n) n.innerHTML=''; }); loadAllocBoard();   // v57L: the queue moves on
@@ -4019,7 +4064,7 @@ function showLabelRow(t){
     + '<div class="lbl-row"><b>PC</b>'+esc(t.pc_code||'—')+'</div>'
     + '<div class="lbl-row"><b>Colour</b>'+esc(t.colour_name||t.colour_code||'—')+'</div>'
     + '<div class="lbl-row"><b>Volume</b>'+fmt(t.actual_l,0)+' L</div>'
-    + '<div class="lbl-row"><b>MMT</b>'+esc(t.mmt_ref||'—')+'</div>'
+    + '<div class="lbl-row"><b>MMT</b>'+esc(t.mmt_refs||t.mmt_ref||'—')+'</div>'
     + '<div class="lbl-pay">'+esc(t.label_payload||'')+'</div></div>';
   ttModalOpen('Tank label — '+esc(t.tt_number||''), body
     + '<div class="row" style="margin-top:12px">'
@@ -4131,6 +4176,7 @@ function clearTtForm(){
   ['td_colname','td_colcode'].forEach(id=>setVal(id,''));
   for(const p of ['tc','tb']){
     ['_actual','_virgin','_mmtL','_salvage','_cutting','_colourkg','_fgremelt','_visc','_temp','_reason','_colcode','_tankcode','_xsreason','_xsnote'].forEach(sf=>setVal(p+sf,''));   // v58F: + MMT litres
+    ttClearDraws(p);   // v59P
     for(let i=0;i<_colCount(p);i++){ setVal(p+'_col_'+i,''); setVal(p+'_colg_'+i,''); }
     // v56U: reuse lines and hand-entered flags clear with the rest
     const rw = document.getElementById(p+'_reuse'); if(rw) rw.innerHTML = '';
@@ -4174,7 +4220,7 @@ async function loadTtList(batch){
         const [,label,colr] = lcStage(t);
         h += `<tr><td class="mono"><b>${esc(t.tt_number||'')}</b></td><td class="mono">${esc(t.batch_number||'')}</td><td>${esc((t.side||'').toUpperCase())}</td>`
           + `<td class="num">${fmt(t.actual_l,0)}</td><td class="num">${fmt(t.total_charged_kg,1)}</td>`
-          + `<td class="mono">${esc(t.mmt_ref||'—')}</td>`
+          + `<td class="mono">${esc(t.mmt_refs||t.mmt_ref||'—')}</td>`
           + `<td><b style="font-size:10.5px;color:${colr}">${label}</b></td>`
           + `<td style="white-space:nowrap">${lcActions(t)}</td></tr>`;
       });
@@ -5270,18 +5316,24 @@ function renderReceipts(){
   if(dg && !dg.error){
     const other = (dg.pending_by_floor||[]).filter(x=>x.n>0).map(x=>(x.floor||'no floor')+' '+x.n+' ('+fmt(x.kg,1)+' kg)').join(', ');
     const sw = dg.sweep||{};
+    /* v59P (Ishan, 7 Nov): one plain line — what is pending, when the two feeds last ran, what has been accepted to
+       date — then, only when there is something to act on, a red line naming the batches the salvage sync could not
+       update and an amber line listing stock accepted above what Tracking now records (over-credits). */
+    const cs = dg.credits_sweep||null;
+    const accLine = (dg.by_account && dg.by_account.length) ? REUSE_ACCTS.map(a=>a[0]).concat(dg.by_account.map(x=>x.account).filter(a=>!REUSE_ACCTS.some(b=>b[0]===a))).map(acc=>{ const p=dg.by_account.find(x=>x.account===acc&&x.status==='pending'), ac=dg.by_account.find(x=>x.account===acc&&x.status!=='pending'); const lbl=(REUSE_ACCTS.find(b=>b[0]===acc)||[acc,acc])[1]; if(!p && !ac) return null; return lbl+' '+(ac?ac.n:0)+(p&&p.n?' (+'+p.n+' pending)':''); }).filter(Boolean).join(' &middot; ') : '';
     pre += '<div id="rcpDiag" style="font-size:11px;color:var(--t3);margin-bottom:8px;line-height:1.6">'
-      + 'Pending overall: <b>'+(dg.pending_total||0)+'</b>'+(other?' &mdash; '+esc(other):'')
-      + ' &middot; DPR cutting receipts ever fed: <b>'+(dg.cutting_rows_total||0)+'</b>'+(dg.cutting_last_day?' (last '+esc(_dm(dg.cutting_last_day))+')':'')
-      + ' &middot; DPR records: '+(dg.dpr_records||0)+(dg.dpr_last_day?' (last '+esc(_dm(dg.dpr_last_day))+')':'')
-      + ' &middot; last feed sweep: '+(sw.at?esc(_v58dDt(sw.at))+' &mdash; '+(sw.cuttings==null?'?':sw.cuttings)+' cutting increment'+(sw.cuttings===1?'':'s')+', '+(sw.credits||0)+' batch'+(sw.credits===1?'':'es')+' checked ('+(sw.ms||0)+' ms)':'not yet run')
-      + (sw.error?' <span style="color:var(--red)">&#9888; '+esc(sw.error)+'</span>':'')
-      /* v59M: the Tracking salvage credits sweep (AIM / Printing / PI, every 15 min) reported on its own, and the ledger's
-         Tracking + DPR generation rows per account — pending vs accepted — so "no PI salvage pending" is explainable */
-      + (dg.credits_sweep ? ' &middot; salvage credits sweep: '+esc(_v58dDt(dg.credits_sweep.at))+' &mdash; '+(dg.credits_sweep.batches||0)+' batches, +'+(dg.credits_sweep.created||0)+' ~'+(dg.credits_sweep.updated||0)+' &minus;'+(dg.credits_sweep.removed||0)+' rows'+((dg.credits_sweep.errors||[]).length?' <span style="color:var(--red)">&#9888; '+esc(dg.credits_sweep.errors.join('; '))+'</span>':'') : ' &middot; salvage credits sweep: not yet run since restart')
-      + (dg.by_account && dg.by_account.length ? '<br>Credits in the ledger by account: '+esc(REUSE_ACCTS.map(a=>a[0]).concat(dg.by_account.map(x=>x.account).filter(a=>!REUSE_ACCTS.some(b=>b[0]===a))).map(acc=>{ const p=dg.by_account.find(x=>x.account===acc&&x.status==='pending'), ac=dg.by_account.find(x=>x.account===acc&&x.status!=='pending'); const lbl=(REUSE_ACCTS.find(b=>b[0]===acc)||[acc,acc])[1]; return lbl+': pending '+(p?p.n+' ('+fmt(p.kg,1)+' kg, last '+_dm(p.last_day)+')':'0')+' · accepted '+(ac?ac.n+' (last '+_dm(ac.last_day)+')':'0'); }).join(' · ')) : '')
-      + (dg.sweep_in_flight?' &middot; <i>a feed sweep is running in the background &mdash; this list refreshes itself when it finishes</i>':'')
+      + 'Pending: <b>'+(dg.pending_total||0)+'</b>'+(other?' ('+esc(other)+')':'')
+      + ' &middot; last DPR cuttings feed: '+(sw.at?esc(_v58dDt(sw.at)):'not yet run')+(sw.cuttings?' (+'+sw.cuttings+')':'')
+      + ' &middot; last Tracking salvage sync: '+(cs?esc(_v58dDt(cs.at))+((cs.created||cs.updated||cs.removed)?' (+'+(cs.created||0)+' ~'+(cs.updated||0)+' &minus;'+(cs.removed||0)+')':''):'not yet run since restart')
+      + (accLine?' &middot; accepted entries to date: '+accLine:'')
+      + (dg.sweep_in_flight?' &middot; <i>a feed sweep is running &mdash; this list refreshes itself when it finishes</i>':'')
       + ' <span id="rcpRefreshing" style="display:none;color:var(--amber)">&#8635; refreshing&hellip;</span></div>';
+    const _errs = [].concat(sw.error?[String(sw.error)]:[], (cs&&cs.errors)||[]);
+    if(_errs.length) pre += '<div style="padding:6px 12px;border:1px solid var(--red);border-left:5px solid var(--red);border-radius:var(--r);background:var(--red-l);color:var(--red);font-size:11.5px;margin-bottom:8px"><b>Salvage sync could not update '+_errs.length+' batch'+(_errs.length===1?'':'es')+':</b> '+esc(_errs.map(e=>String(e).split(':')[0]).join(', '))+' <span style="color:var(--t3)" title="'+esc(_errs.join(' | '))+'">(hover for the server message)</span></div>';
+    const _oc = (cs&&cs.overCredit)||[];
+    if(_oc.length) pre += '<div style="padding:6px 12px;border:1px solid var(--amber);border-left:5px solid var(--amber);border-radius:var(--r);background:var(--amber-l);color:var(--amber);font-size:11.5px;margin-bottom:8px"><b>Stock accepted above what Tracking now records</b> &mdash; '+_oc.length+' item'+(_oc.length===1?'':'s')+': '
+      + _oc.map(o=>'<span style="white-space:nowrap">'+esc(o.batch)+' '+esc((REUSE_ACCTS.find(b=>b[0]===o.account)||[o.account,o.account])[1])+' +'+fmt(o.excessKg,2)+' kg <span style="color:var(--t3)">(accepted '+fmt(o.acceptedKg,2)+' · Tracking '+fmt(o.trackingKg,2)+')</span></span>').join(' &middot; ')
+      + '<div style="color:var(--t3);margin-top:2px">The Tracking entry was reduced or removed after GPR accepted the salvage. The accepted figure is kept in stock; yield uses Tracking. Correct the stock with an AIM / Printing / PI salvage correction entry.</div></div>';
   }
   if(!RCP_ROWS.length){ el.innerHTML = pre + '<div style="padding:10px 14px;border:1px solid var(--green);border-left:5px solid var(--green);border-radius:var(--r);background:var(--green-l);color:var(--green);font-weight:600">Nothing pending &mdash; all generation received into stock.</div>'; _rcpBtn(); return; }
   if(!rows.length){ el.innerHTML = pre + '<div class="empty">No pending receipts match these filters.</div>'; _rcpBtn(); return; }
@@ -6307,6 +6359,17 @@ function renderMaterialRecon(rows, d){
 // v59B (Ishan, 27 Oct): every generation line names its state in full — accepted into stock · pending GPR acceptance
 function _ywSg(v){ v = Number(v||0); return (v>=0?'+':'')+fmt(v,1); }   // v59L: signed block subtotal
 function _ywAP(acc, pend){ const n1 = v => fmt(Number(v||0),1); return ' <span style="color:var(--t3);font-size:10.5px">accepted '+n1(acc)+' · pending '+n1(pend)+'</span>'; }
+/* v59P (Ishan, 7 Nov — 26ZD169: "expected 1.9 kg, accepted 4.9 kg — how can both vary?"): the ladder's figure is what
+   Tracking records NOW (lakhs × this batch's average weight); "accepted" is what GPR received into stock when the entry was
+   first made. They differ only when the Tracking entry was reduced or removed AFTER acceptance (the v59F rule keeps an
+   acceptance) — or, the other way, when a new entry is still to be credited. RULE: yield uses Tracking; the surplus in
+   stock is an over-credit to be corrected in GPR, and it is said so here, in red, never left as two silent figures. */
+function _ywTrkFlag(D){
+  const over = Number(D.trkOverCreditKg||0), under = Number(D.trkUnderCreditKg||0), n1 = v => fmt(Number(v||0),1);
+  if(over > 0.05) return '<div style="color:var(--red);font-size:10.5px;margin-top:2px">&#9888; Stock carries <b>'+n1(Number(D.genTrkAcceptedKg||0)+Number(D.genTrkPendingKg||0))+' kg</b> credited against <b>'+n1(D.salvageRecoveredKg)+' kg</b> now in Tracking &mdash; <b>'+n1(over)+' kg over-credited</b> (the Tracking entry was reduced or removed after GPR accepted it). Yield uses Tracking. Correct the stock with a salvage correction entry.</div>';
+  if(under > 0.05) return '<div style="color:var(--amber);font-size:10.5px;margin-top:2px">'+n1(under)+' kg recorded in Tracking is not yet credited to stock &mdash; the next salvage sync (every 15 min) will add it as pending.</div>';
+  return '';
+}
 function _ywWipLabel(N){
   const n2 = v => fmt(Number(v||0),2), W = N.wipSplit || {}, legs = W.legs || [], F = W.factors || {};
   if(!legs.length) return 'WIP (consolidated, Report E) '+n2(N.wipLakhs)+' L';
@@ -6350,7 +6413,7 @@ async function mrOpen(bn){
         + '<tr class="blkhead"><td colspan="2">Salvage</td></tr>'
         + '<tr><td>+ Salvage charged into the tanks (Ledger A'+(Number(D.legacyDrawKg)>0.005?' + Ledger B '+n1(D.legacyDrawKg):'')+') <span style="color:var(--t3);font-size:10.5px">own batch '+n1(D.consumedSalvageOwnKg)+' · other batches '+n1(Number(D.consumedSalvageKg||0)-Number(D.consumedSalvageOwnKg||0))+(Number(D.legacyDrawKg)>0.005?' · Ledger B '+n1(D.legacyDrawKg):'')+'</span></td><td class="num">+'+n1(Number(D.consumedSalvageKg||0)+Number(D.legacyDrawKg||0))+'</td></tr>'
         + '<tr><td>&minus; Salvage generated by this batch (GPR entries)'+_ywAP(D.genSalManualAcceptedKg,D.genSalManualPendingKg)+'</td><td class="num" style="color:'+(Number(D.generatedSalvageManualKg)>0.005?'var(--red)':'var(--t3)')+'">&minus;'+n1(D.generatedSalvageManualKg)+'</td></tr>'
-        + '<tr><td>&minus; Salvage recovered through Tracking (AIM / PI wastage '+n2(D.salvageLakhs)+' L × '+n1(y.avgMg)+' mg'+(Number(D.printingSalvageKg)>0.005?'; printing salvage from the Daily Printing Log '+n1(D.printingSalvageKg)+' kg':'')+')'+_ywAP(D.genTrkAcceptedKg,D.genTrkPendingKg)+'</td><td class="num" style="color:var(--red)">&minus;'+n1(D.salvageRecoveredKg)+'</td></tr>'   /* v58X: + Daily-Printing salvage; v59B: state in full */
+        + '<tr><td>&minus; Salvage recovered through Tracking (AIM / PI wastage '+n2(D.salvageLakhs)+' L × '+n1(y.avgMg)+' mg'+(Number(D.printingSalvageKg)>0.005?'; printing salvage from the Daily Printing Log '+n1(D.printingSalvageKg)+' kg':'')+')'+_ywAP(D.genTrkAcceptedKg,D.genTrkPendingKg)+_ywTrkFlag(D)+'</td><td class="num" style="color:var(--red)">&minus;'+n1(D.salvageRecoveredKg)+'</td></tr>'   /* v58X: + Daily-Printing salvage; v59B: state in full; v59P: over-credit rule */
         + (Number(D.expectedSalvageKg)>0.005 ? '<tr><td>&minus; Salvage the WIP is expected to return ('+n2(D.expectedSalvageLakhs)+' L = WIP − packable WIP: the standard printing / PI loss still ahead'+(N.aPct!=null?' + (100 − A) % of the unscanned part':'')+', × '+n1(y.avgMg)+' mg) <span style="color:var(--t3)">— a forecast, replaced by the actual printing / PI salvage as it is entered</span></td><td class="num" style="color:var(--red)">&minus;'+n1(D.expectedSalvageKg)+'</td></tr>' : '')   /* v58K; v59B wording */
         + '<tr class="sumrow"><td>= Net salvage</td><td class="num">'+_ywSg(Number(D.consumedSalvageKg||0)+Number(D.legacyDrawKg||0)-Number(D.generatedSalvageManualKg||0)-Number(D.salvageRecoveredKg||0)-Number(D.expectedSalvageKg||0))+'</td></tr>'
         + '<tr class="blkhead"><td colspan="2">Return solution</td></tr>'
@@ -6403,7 +6466,8 @@ async function loadBatchMovements(bn, target){
   let d = null; try{ d = await api('/api/gpr/batch-movements/'+encodeURIComponent(bn)); }catch(e){}
   if(!d || !d.ok){ out.innerHTML = '<div class="empty">'+esc((d&&d.error)||'Could not load the movements')+'</div>'; return; }
   (window._MVD = window._MVD || {})['B|'+bn] = Object.assign((window._MVD||{})['B|'+bn]||{}, { mv: d });   // v58U: kept for export
-  out.innerHTML = _mvRender(d, { bn, scope: 'this batch', own: 'own batch', tanks: "this batch's tanks" });
+  const _net = ((((window._MVD||{})['B|'+bn]||{}).yield||{}).denominator)||null;   // v59P: the ladder's Tracking-vs-stock rule on the KPI card too
+  out.innerHTML = _mvRender(d, { bn, scope: 'this batch', own: 'own batch', tanks: "this batch's tanks", net: _net });
 }
 // v58U (Ishan, 21 Oct): ONE renderer for the movements picture — the batch modal and the floor-period modal
 // (day / date range / month) use it unchanged; ctx says whose stock is being read. The floor variant adds a
@@ -6430,6 +6494,7 @@ function _mvRender(d, ctx){
     + kpiH('Generated by '+ctx.scope, n1(Number(S.generatedAccepted||0)+Number(S.generatedPending||0))+' kg', 'green',
         'Cuttings <b>'+n1(G.cut.a+G.cut.p)+'</b> <span class="dim">accepted '+n1(G.cut.a)+' · pending '+n1(G.cut.p)+'</span>'
         +'<br>Salvage <b>'+n1(G.sal.a+G.sal.p)+'</b> <span class="dim">accepted '+n1(G.sal.a)+' · pending '+n1(G.sal.p)+'</span>'
+        +((ctx.net&&Number(ctx.net.trkOverCreditKg)>0.05)?'<br><span style="color:var(--red)">&#9888; '+n1(ctx.net.trkOverCreditKg)+' kg accepted above Tracking\'s current '+n1(ctx.net.salvageRecoveredKg)+' kg &mdash; correct the stock</span>':'')   /* v59P */
         +(S.generatedVoided>0.005?'<br><span class="dim">voided '+n1(S.generatedVoided)+'</span>':''))
     + kpiH('Consumed into its tanks', n1(consumedTotal)+' kg', '',
         'cuttings <b>'+n1(Number((S.byAccountCon||{}).cutting||0))+'</b> · salvage <b>'+n1(consumedTotal-Number(S.consumedLegacy||0)-Number((S.byAccountCon||{}).cutting||0))+'</b><br>from '+ctx.own+' <b>'+n1(S.consumedOwn)+'</b><br>from other batches <b'+(fromOther>0.005?' style="color:var(--amber)"':'')+'>'+n1(fromOther)+'</b>'
@@ -6520,7 +6585,7 @@ function exportMaterialRecon(){
   });
   s1.push(['TOTAL','',T.n, T.net>0?+(T.out/T.net*100).toFixed(2):'', '', +T.out.toFixed(1), +T.net.toFixed(1), +T.plan.toFixed(1), +T.used.toFixed(1), +(T.used-T.plan).toFixed(1), T.plan>0?+((T.used-T.plan)/T.plan*100).toFixed(1):'', +T.q.toFixed(1), +T.w.toFixed(1), +T.p.toFixed(1), T.tp, T.ti, T.of, T.uf, T.sh]);
   const cols = [['machineId','Machine'],['floor','Floor'],['batch','Batch'],['day','Start'],['status','Status'],['customer','Customer'],['pcCode','PC'],['size','Size'],
-    ['yieldPct','Yield %'],['yieldVariance','vs target'],['outputKg','Packable output kg'],['netMaterialKg','Net material kg'],['freshMaterialKg','Fresh material kg'],['consumedKg','Reuse charged kg'],['generatedManualKg','Generated kg'],['salvageRecoveredKg','Salvage recovered kg'],['packedLakhs','Packed L'],['wipLakhs','WIP L'],['yieldAvgMg','Avg mg (labels)'],
+    ['yieldPct','Yield %'],['yieldVariance','vs target'],['outputKg','Packable output kg'],['netMaterialKg','Net material kg'],['freshMaterialKg','Fresh material kg'],['consumedKg','Reuse charged kg'],['generatedManualKg','Generated kg'],['salvageRecoveredKg','Salvage recovered kg'],['trkOverCreditKg','Salvage over-credit kg'],['packedLakhs','Packed L'],['wipLakhs','WIP L'],['yieldAvgMg','Avg mg (labels)'],
     ['plannedGel','Planned kg'],['usedGel','Net charged kg'],['totalDifference','Difference kg'],['pctOfPlan','% of plan'],['qtyEffect','Cause: quantity'],['weightEffect','Cause: weight'],['processVariance','Cause: process'],
     ['grossPlannedLacs','Gross planned (lacs)'],['grossActualLacs','Gross actual (lacs)'],['plannedAvgMg','Planned mg'],['actualAvgMg','Actual mg'],['aimPct','A-grade %'],
     ['capPlanned','Cap TT plan'],['capIssued','Cap TT issued'],['bodyPlanned','Body TT plan'],['bodyIssued','Body TT issued'],['ttVariance','TT variance'],['overFillTanks','Over-fill tanks'],['overFillL','Over-fill L'],['underFillTanks','Under-fill tanks'],['underFillL','Under-fill L'],['avgHoldCap','Avg hold cap (h)'],['avgHoldBody','Avg hold body (h)'],['shortHold','Holds under min'],['anchored','Anchored plan']];
@@ -6564,7 +6629,7 @@ function exportMaterialReconFlat(){
     columns:[ {key:'batch',label:'Batch',w:12},{key:'machineId',label:'Machine',w:9},{key:'floor',label:'Floor',w:8},
       {key:'status',label:'Status',w:10},{key:'customer',label:'Customer',w:26},{key:'pcCode',label:'PC',w:10},{key:'day',label:'Start',w:12},
       {key:'yieldPct',label:'Yield %',w:10,num:true},{key:'yieldVariance',label:'vs target',w:10,num:true},{key:'outputKg',label:'Output kg',w:11,num:true},{key:'netMaterialKg',label:'Net material kg',w:14,num:true},
-      {key:'freshMaterialKg',label:'Fresh material kg',w:15,num:true},{key:'consumedKg',label:'Reuse charged kg',w:15,num:true},{key:'generatedManualKg',label:'Generated kg',w:13,num:true},{key:'salvageRecoveredKg',label:'Salvage recovered kg',w:18,num:true},
+      {key:'freshMaterialKg',label:'Fresh material kg',w:15,num:true},{key:'consumedKg',label:'Reuse charged kg',w:15,num:true},{key:'generatedManualKg',label:'Generated kg',w:13,num:true},{key:'salvageRecoveredKg',label:'Salvage recovered kg',w:18,num:true},{key:'trkOverCreditKg',label:'Salvage over-credit kg',w:14,num:true},
       {key:'packedLakhs',label:'Packed L',w:10,num:true},{key:'wipLakhs',label:'WIP L',w:9,num:true},{key:'yieldAvgMg',label:'Avg mg (labels)',w:13,num:true},
       {key:'plannedGel',label:'Planned kg',w:12,num:true},{key:'usedGel',label:'Net charged kg',w:12,num:true},
       {key:'totalDifference',label:'Difference kg',w:13,num:true},{key:'pctOfPlan',label:'% of plan',w:10,num:true},
@@ -6780,8 +6845,8 @@ function ywExport(key){
     [['Virgin gelatine',Dn.virginKg],['Colour + TiO2',Dn.colourKg],['FG remelt',Dn.fgRemeltKg],['Fresh material',Dn.freshMaterialKg],
      ['CUTTINGS',null],['+ Cuttings charged (own '+n(Dn.consumedCuttingOwnKg)+' · other batches '+n(Number(Dn.consumedCuttingKg||0)-Number(Dn.consumedCuttingOwnKg||0))+')',Dn.consumedCuttingKg],['− Cuttings generated (accepted '+n(Dn.genCutAcceptedKg)+' · pending '+n(Dn.genCutPendingKg)+')',-Number(Dn.generatedCuttingKg||0)],['= Net cuttings',Number(Dn.consumedCuttingKg||0)-Number(Dn.generatedCuttingKg||0)],
      ['SALVAGE',null],['+ Salvage charged (own '+n(Dn.consumedSalvageOwnKg)+' · other batches '+n(Number(Dn.consumedSalvageKg||0)-Number(Dn.consumedSalvageOwnKg||0))+(Number(Dn.legacyDrawKg)>0.005?' · Ledger B '+n(Dn.legacyDrawKg):'')+')',Number(Dn.consumedSalvageKg||0)+Number(Dn.legacyDrawKg||0)],['− Salvage generated, GPR entries (accepted '+n(Dn.genSalManualAcceptedKg)+' · pending '+n(Dn.genSalManualPendingKg)+')',-Number(Dn.generatedSalvageManualKg||0)],
-     ['− Salvage recovered through Tracking (accepted '+n(Dn.genTrkAcceptedKg)+' · pending '+n(Dn.genTrkPendingKg)+')',-Number(Dn.salvageRecoveredKg||0)],['− Expected WIP salvage (std printing / PI loss ahead; forecast)',-Number(Dn.expectedSalvageKg||0)],['= Net salvage',Number(Dn.consumedSalvageKg||0)+Number(Dn.legacyDrawKg||0)-Number(Dn.generatedSalvageManualKg||0)-Number(Dn.salvageRecoveredKg||0)-Number(Dn.expectedSalvageKg||0)],
-     ['RETURN SOLUTION',null],['+ Return solution used',Dn.returnUsedKg],['− Return solution recovered',-Number(Dn.returnRecoveredKg||0)],['Net material',Dn.total]].forEach(r=>rows.push(r[1]==null?[r[0]]:[r[0], n(r[1])]));
+     ['− Salvage recovered through Tracking (accepted '+n(Dn.genTrkAcceptedKg)+' · pending '+n(Dn.genTrkPendingKg)+')',-Number(Dn.salvageRecoveredKg||0)],(Number(Dn.trkOverCreditKg)>0.05?['   ⚠ Stock over-credited vs Tracking (accepted above the Tracking figure; yield uses Tracking — correct the stock)',Number(Dn.trkOverCreditKg)]:null),['− Expected WIP salvage (std printing / PI loss ahead; forecast)',-Number(Dn.expectedSalvageKg||0)],['= Net salvage',Number(Dn.consumedSalvageKg||0)+Number(Dn.legacyDrawKg||0)-Number(Dn.generatedSalvageManualKg||0)-Number(Dn.salvageRecoveredKg||0)-Number(Dn.expectedSalvageKg||0)],
+     ['RETURN SOLUTION',null],['+ Return solution used',Dn.returnUsedKg],['− Return solution recovered',-Number(Dn.returnRecoveredKg||0)],['Net material',Dn.total]].filter(Boolean).forEach(r=>rows.push(r[1]==null?[r[0]]:[r[0], n(r[1])]));
   } else {
     const y = D.yield||{}, M = y.M||{};
     rows.push(['GPR — Floor yield working', FLOOR_LABELS[y.floor]||y.floor], ['Period', y.from+' → '+y.to], ['Production days', y.days], ['Generated', new Date().toISOString()], []);

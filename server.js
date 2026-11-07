@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v59N';
+const APP_BUILD = 'v59P';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -1308,6 +1308,30 @@ const MIGRATIONS = [
       ALTER TABLE dpr_save_log ADD COLUMN device TEXT;
       ALTER TABLE dpr_save_log ADD COLUMN base_rev INTEGER;
       ALTER TABLE dpr_save_log ADD COLUMN merged_json TEXT;
+    `
+  },
+  {
+    version: 94,
+    name: 'v59p_tt_mmt_draws',
+    // v59P (Ishan, 7 Nov — "one TT needs 35 L from the residual charge and 65 L from the next"): a transfer tank may
+    // draw its virgin gelatine from MORE THAN ONE MMT charge. One row per tank per charge — the litres of that
+    // charge's solution drawn, the kg at THAT charge's concentration, and the allocation it settled. gpr_tt.mmt_ref
+    // keeps the first charge (everything that reads one ref still works); gpr_tt.virgin_kg stays the tank's total.
+    // Tanks written before this build have no rows here and are read as a single draw (mmt_ref, virgin_kg).
+    sql: `
+      CREATE TABLE IF NOT EXISTS gpr_tt_mmt_draws (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tt_id INTEGER NOT NULL,
+        mmt_ref TEXT NOT NULL,
+        draw_l REAL NOT NULL DEFAULT 0,
+        virgin_kg REAL NOT NULL DEFAULT 0,
+        conc_kg_per_l REAL,
+        alloc_id INTEGER,
+        seq INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_gpr_ttdraw_tt ON gpr_tt_mmt_draws(tt_id);
+      CREATE INDEX IF NOT EXISTS idx_gpr_ttdraw_mmt ON gpr_tt_mmt_draws(mmt_ref);
     `
   },
   {
@@ -5213,6 +5237,11 @@ async function ensurePostgresTables() {
         virgin_kg REAL NOT NULL DEFAULT 0, tt_id INTEGER, production_day TEXT, note TEXT, moved_by TEXT, moved_at TEXT NOT NULL DEFAULT (NOW()::TEXT))`,
       `CREATE INDEX IF NOT EXISTS idx_gpr_rs_batch ON gpr_return_solution(batch_number, side, movement_type)`,
       `CREATE INDEX IF NOT EXISTS idx_gpr_rs_src ON gpr_return_solution(source_batch, side)`,
+      // v59P migration-94 mirror — a tank's draws from several MMT charges
+      `CREATE TABLE IF NOT EXISTS gpr_tt_mmt_draws (id SERIAL PRIMARY KEY, tt_id INTEGER NOT NULL, mmt_ref TEXT NOT NULL, draw_l REAL NOT NULL DEFAULT 0,
+        virgin_kg REAL NOT NULL DEFAULT 0, conc_kg_per_l REAL, alloc_id INTEGER, seq INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT (NOW()::TEXT))`,
+      `CREATE INDEX IF NOT EXISTS idx_gpr_ttdraw_tt ON gpr_tt_mmt_draws(tt_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_gpr_ttdraw_mmt ON gpr_tt_mmt_draws(mmt_ref)`,
       `CREATE INDEX IF NOT EXISTS idx_gpr_rs_day ON gpr_return_solution(production_day, floor)`,
       `ALTER TABLE gpr_tt ADD COLUMN IF NOT EXISTS return_solution_l REAL`,
       `ALTER TABLE gpr_tt ADD COLUMN IF NOT EXISTS return_solution_kg REAL`,
@@ -20383,7 +20412,7 @@ app.get('/api/admin/export', (req, res) => {
       // excluded every charge, tank and ledger movement; export now round-trips GPR).
       'gpr_mmt_charges', 'gpr_tt', 'gpr_tt_colourants', 'gpr_batch_status',
       'gpr_masters', 'gpr_ledger', 'gpr_legacy_stock', 'gpr_crush',
-      'gpr_pc_colour_map', 'gpr_batch_plan', 'gpr_mmt_alloc', 'gpr_return_solution'   // v57L: the three newer GPR tables round-trip too; v58M: + return solution
+      'gpr_pc_colour_map', 'gpr_batch_plan', 'gpr_mmt_alloc', 'gpr_return_solution', 'gpr_tt_mmt_draws'   // v57L: the three newer GPR tables round-trip too; v58M: + return solution; v59P: + TT draws
     ];
 
     const exportData = {
@@ -20443,7 +20472,7 @@ app.post('/api/admin/import', (req, res) => {
         // v55: GPR module tables — importable so an export restores GPR alongside the rest.
         'gpr_mmt_charges', 'gpr_tt', 'gpr_tt_colourants', 'gpr_batch_status',
         'gpr_masters', 'gpr_ledger', 'gpr_legacy_stock', 'gpr_crush',
-        'gpr_pc_colour_map', 'gpr_batch_plan', 'gpr_mmt_alloc', 'gpr_return_solution'   // v57L; v58M
+        'gpr_pc_colour_map', 'gpr_batch_plan', 'gpr_mmt_alloc', 'gpr_return_solution', 'gpr_tt_mmt_draws'   // v57L; v58M; v59P
       ];
 
       for (const table of importableTables) {
@@ -27291,6 +27320,13 @@ function _v58mNetCalc(i) {
            generatedCuttingKg: r2(n(i.genCutAcceptedKg) + n(i.genCutPendingKg)), genCutAcceptedKg: r2(i.genCutAcceptedKg), genCutPendingKg: r2(i.genCutPendingKg),
            generatedSalvageManualKg: r2(n(i.genSalManualAcceptedKg) + n(i.genSalManualPendingKg)), genSalManualAcceptedKg: r2(i.genSalManualAcceptedKg), genSalManualPendingKg: r2(i.genSalManualPendingKg),
            genTrkAcceptedKg: r2(i.genTrkAcceptedKg), genTrkPendingKg: r2(i.genTrkPendingKg),
+           // v59P (Ishan, 7 Nov — 26ZD169: "expected 1.9 kg, accepted 4.9 kg"): the ledger's Tracking credits (what GPR
+           // accepted / has pending) against what Tracking + the Daily Printing Log say NOW. Yield always uses the
+           // Tracking figure (salvageRecoveredKg); a positive trkOverCreditKg is stock accepted on an entry that was
+           // later reduced — reported, never netted silently.
+           trkLedgerKg: r2(n(i.genTrkAcceptedKg) + n(i.genTrkPendingKg)),
+           trkOverCreditKg: r2(Math.max(0, n(i.genTrkAcceptedKg) + n(i.genTrkPendingKg) - n(i.salvageRecoveredKg))),
+           trkUnderCreditKg: r2(Math.max(0, n(i.salvageRecoveredKg) - n(i.genTrkAcceptedKg) - n(i.genTrkPendingKg))),
            salvageLakhs: +Number(i.salvageLakhs || 0).toFixed(3), salvageRecoveredKg: r2(i.salvageRecoveredKg), printingSalvageKg: r2(i.printingSalvageKg),   // v58X
            expectedSalvageLakhs: +Number(i.expectedSalvageLakhs || 0).toFixed(3), expectedSalvageKg: r2(i.expectedSalvageKg),
            returnUsedL: +Number(i.returnUsedL || 0).toFixed(2), returnUsedKg: r2(i.returnUsedKg),
@@ -27556,7 +27592,27 @@ async function _v59fRevalueReturnSolution() {
     }
   } catch (e) { console.warn('[v59F return-solution revalue] skipped:', e.message); }
 }
+// ═══ v59P (Ishan, 7 Nov — Stock tab: "26W115: duplicate key value violates unique constraint idx_gpr_ledger_autosync_day") ═══
+// Two ways the day-wise sync tripped its own unique index (batch · account · source · receipt_ref):
+//   (a) once a day's 'day:D/adj' increase row had been ACCEPTED, a further increase on the same day tried to
+//       insert a second 'day:D/adj' (26W115 03/11 + 05/11, 26X155 05/11, 26ZB155 05/11 + 06/11, 26ZC158 05/11
+//       all carry day + adj accepted) — the batch then failed on every sweep and was never synced again;
+//   (b) the 15-min all-batch sweep and a per-batch sync (yield modal, batch summary) ran the same batch at
+//       the same time, each read "no pending row" and both inserted.
+// Now: the next free suffix ('/adj', '/adj2', '/adj3' …) is used for each further increase, one sync per
+// batch runs at a time (callers share the in-flight promise), and a duplicate-key insert is treated as
+// "already there" rather than an error. The sync also REPORTS every day where the accepted stock exceeds
+// what Tracking now says (the v59F "accepted figure kept" case) so the Stock tab and the yield modal can
+// show it instead of a log line nobody reads.
+const _v59pCreditSyncInFlight = new Map();
 async function gprSyncTrackingCredits(batchNumber) {
+  const _bnKey = String(batchNumber || '').trim().toUpperCase();
+  if (_bnKey && _v59pCreditSyncInFlight.has(_bnKey)) return _v59pCreditSyncInFlight.get(_bnKey);
+  const p = _gprSyncTrackingCreditsInner(batchNumber).finally(() => { if (_bnKey) _v59pCreditSyncInFlight.delete(_bnKey); });
+  if (_bnKey) _v59pCreditSyncInFlight.set(_bnKey, p);
+  return p;
+}
+async function _gprSyncTrackingCreditsInner(batchNumber) {
   if (_v59eCreditRepairDone) { try { await _v59eCreditRepairDone; } catch (_) {} }   // v59E: never sync over un-repaired keys
   const bn = String(batchNumber || '').trim().toUpperCase();
   const zero = { aim_salvage: 0, printing_salvage: 0, pi_salvage: 0 };
@@ -27630,7 +27686,9 @@ async function gprSyncTrackingCredits(batchNumber) {
   });
   const _del = async id => { if (pgPool) await pgPool.query('DELETE FROM gpr_ledger WHERE id=$1', [id]); else db.prepare('DELETE FROM gpr_ledger WHERE id=?').run(id); };
   const _setQty = async (id, kg) => { if (pgPool) await pgPool.query(`UPDATE gpr_ledger SET qty_kg=$1, moved_at=NOW()::TEXT WHERE id=$2`, [kg, id]); else db.prepare(`UPDATE gpr_ledger SET qty_kg=?, moved_at=datetime('now') WHERE id=?`).run(kg, id); };
-  const totals = { aim_salvage: 0, printing_salvage: 0, pi_salvage: 0 }, changed = { created: 0, updated: 0, removed: 0, belowAccepted: 0 };
+  const totals = { aim_salvage: 0, printing_salvage: 0, pi_salvage: 0 }, changed = { created: 0, updated: 0, removed: 0, belowAccepted: 0, overCredit: [] };
+  // v59P: every accepted day row above what Tracking now says is an OVER-CREDIT in stock — reported, never reversed
+  const _over = (acc, day, trackingKg, acceptedKg) => { changed.belowAccepted++; changed.overCredit.push({ account: acc, day, trackingKg: +trackingKg.toFixed(2), acceptedKg: +acceptedKg.toFixed(2), excessKg: +(acceptedKg - trackingKg).toFixed(2) }); console.warn(`[gpr-credits] ${bn} ${acc} ${day}: Tracking now ${trackingKg.toFixed(2)} kg but ${acceptedKg.toFixed(2)} kg already accepted into stock — accepted figure kept; correct in GPR if the entry was wrong`); };
   for (const acc of Object.keys(targets)) {
     for (const day of Object.keys(targets[acc]).sort()) {
       const kg = targets[acc][day]; totals[acc] += kg;
@@ -27639,7 +27697,7 @@ async function gprSyncTrackingCredits(batchNumber) {
       const want = +(kg - accSum).toFixed(2);   // what is still to be credited beyond what the chemist has accepted
       if (want <= 0.005) {
         for (const r of h.pending) { await _del(r.id); changed.removed++; }
-        if (want < -0.005) { changed.belowAccepted++; console.warn(`[gpr-credits] ${bn} ${acc} ${day}: Tracking now ${kg} kg but ${accSum.toFixed(2)} kg already accepted into stock — accepted figure kept; correct in GPR if the entry was wrong`); }
+        if (want < -0.005) _over(acc, day, kg, accSum);
         continue;
       }
       if (h.pending.length) {
@@ -27647,20 +27705,34 @@ async function gprSyncTrackingCredits(batchNumber) {
         for (const r of h.pending.slice(1)) { await _del(r.id); changed.removed++; }
         if (Math.abs(Number(keep.qty_kg || 0) - want) >= 0.005) { await _setQty(keep.id, want); changed.updated++; }
       } else {
-        await gprLedgerMove({
-          movement_type: 'generation', account: acc, source: 'tracking',
-          batch_number: bn, pc_code: order?.pcCode || order?.pc_code || null,
-          colour_name: order?.colour || null, machine_id: order?.machineId || null,
-          floor: gprFloorOfMachine(order?.machineId, masters),
-          qty_kg: want, production_day: day, moved_by: 'system', receipt_status: 'pending', receipt_ref: 'day:' + day + (accSum > 0.005 ? '/adj' : ''),
-          note: (acc === 'printing_salvage' && dpl[day] ? 'from Planning Daily Printing Log' : 'from Tracking wastage') + ' ' + day + (accSum > 0.005 ? ' — increase over the ' + accSum.toFixed(2) + ' kg already accepted' : '') + ' (pending GPR receipt)',
-        });
-        changed.created++;
+        // v59P: the ref must be one this (batch, account) has never used — an accepted '/adj' row keeps its ref for good
+        const usedRefs = new Set(h.accepted.map(r => String(r.receipt_ref || '')));
+        let ref = 'day:' + day + (accSum > 0.005 ? '/adj' : '');
+        for (let n = 2; usedRefs.has(ref) && n < 1000; n++) ref = 'day:' + day + '/adj' + n;
+        try {
+          await gprLedgerMove({
+            movement_type: 'generation', account: acc, source: 'tracking',
+            batch_number: bn, pc_code: order?.pcCode || order?.pc_code || null,
+            colour_name: order?.colour || null, machine_id: order?.machineId || null,
+            floor: gprFloorOfMachine(order?.machineId, masters),
+            qty_kg: want, production_day: day, moved_by: 'system', receipt_status: 'pending', receipt_ref: ref,
+            note: (acc === 'printing_salvage' && dpl[day] ? 'from Planning Daily Printing Log' : 'from Tracking wastage') + ' ' + day + (accSum > 0.005 ? ' — increase over the ' + accSum.toFixed(2) + ' kg already accepted' : '') + ' (pending GPR receipt)',
+          });
+          changed.created++;
+        } catch (e) {
+          // v59P: a concurrent sync already wrote this row — it is there, nothing to repeat
+          if (/duplicate key|unique constraint|UNIQUE/i.test(String(e.message || ''))) { console.warn(`[gpr-credits] ${bn} ${acc} ${day}: ${ref} already present (concurrent sync) — kept`); changed.dupSkipped = (changed.dupSkipped || 0) + 1; }
+          else throw e;
+        }
       }
     }
   }
-  // day rows whose source entries vanished (edited away in Tracking / Planning): drop the pending ones; accepted stock stays
-  for (const k of Object.keys(have)) { for (const r of have[k].pending) { await _del(r.id); changed.removed++; } }
+  // day rows whose source entries vanished (edited away in Tracking / Planning): drop the pending ones; accepted stock stays — and is reported as over-credit
+  for (const k of Object.keys(have)) {
+    for (const r of have[k].pending) { await _del(r.id); changed.removed++; }
+    const accSum = have[k].accepted.reduce((a, r) => a + Number(r.qty_kg || 0), 0);
+    if (accSum > 0.005) { const [acc, day] = k.split('|'); _over(acc, day, 0, accSum); }
+  }
   return Object.assign({ aim_salvage: +totals.aim_salvage.toFixed(2), printing_salvage: +totals.printing_salvage.toFixed(2), pi_salvage: +totals.pi_salvage.toFixed(2) }, changed);
 }
 // v58X: FULL-COVERAGE sweep — every batch with Tracking wastage (AIM / printing / PI) or Daily-Printing salvage
@@ -27672,7 +27744,7 @@ async function gprSyncTrackingCreditsAll() {
   if (_v59eCreditRepairDone) { try { await _v59eCreditRepairDone; } catch (_) {} }   // v59E: never sweep over un-repaired keys
   if (_gprCreditSweepInFlight) return _gprCreditSweepInFlight;
   _gprCreditSweepInFlight = (async () => {
-    const t0 = Date.now(); const st = { at: new Date().toISOString(), batches: 0, created: 0, updated: 0, removed: 0, skipped: 0, errors: [] };
+    const t0 = Date.now(); const st = { at: new Date().toISOString(), batches: 0, created: 0, updated: 0, removed: 0, skipped: 0, errors: [], overCredit: [] };   // v59P: + over-credited batches
     try {
       const P1 = pgPool ? '$1' : '?';
       const sql = `SELECT DISTINCT UPPER(batch_number) AS bn FROM tracking_wastage WHERE ts >= ${P1} AND LOWER(dept) IN ('aim','printing','pi') AND COALESCE(batch_number,'') <> ''`;
@@ -27681,7 +27753,9 @@ async function gprSyncTrackingCreditsAll() {
       const dpl = await _gprDplSalvageMap();
       for (const bn of Object.keys(dpl)) if (Object.keys(dpl[bn]).some(d => d >= _GPR_CREDIT_SWEEP_FROM)) set.add(bn);
       for (const bn of Array.from(set).sort()) {
-        try { const r = await gprSyncTrackingCredits(bn); st.batches++; if (r && r.skipped) st.skipped++; st.created += (r && r.created) || 0; st.updated += (r && r.updated) || 0; st.removed += (r && r.removed) || 0; }
+        try { const r = await gprSyncTrackingCredits(bn); st.batches++; if (r && r.skipped) st.skipped++; st.created += (r && r.created) || 0; st.updated += (r && r.updated) || 0; st.removed += (r && r.removed) || 0;
+              // v59P: one line per batch · account — accepted stock above Tracking's current entries (sum over days)
+              if (r && Array.isArray(r.overCredit) && r.overCredit.length) { const byAcc = {}; r.overCredit.forEach(o => { const a = byAcc[o.account] = byAcc[o.account] || { batch: bn, account: o.account, excessKg: 0, acceptedKg: 0, trackingKg: 0, days: [] }; a.excessKg += o.excessKg; a.acceptedKg += o.acceptedKg; a.trackingKg += o.trackingKg; a.days.push(o.day); }); Object.values(byAcc).forEach(a => { a.excessKg = +a.excessKg.toFixed(2); a.acceptedKg = +a.acceptedKg.toFixed(2); a.trackingKg = +a.trackingKg.toFixed(2); st.overCredit.push(a); }); } }
         catch (e) { if (st.errors.length < 10) st.errors.push(bn + ': ' + e.message); }
       }
     } catch (e) { st.errors.push('sweep: ' + e.message); }
@@ -27969,7 +28043,7 @@ app.post('/api/gpr/mmt/:id/distribute', _v59bSerial(async (req, res) => {   // v
                        : db.prepare(`SELECT id, tt_number, batch_number, floor, mmt_ref, issued_at, virgin_kg FROM gpr_tt WHERE id=?`).get(l.tt_id);
       if (!t) return res.status(404).json({ ok: false, error: `Tank ${l.tt_id} not found` });
       if (!floorsOk.includes(t.floor)) return res.status(409).json({ ok: false, error: 'WRONG_FLOOR', detail: `${t.tt_number} (${t.batch_number}) is on ${t.floor}; ${mmt.mmt_ref} serves ${floorsOk.join('/')}.` });
-      if (t.mmt_ref && t.mmt_ref !== mmt.mmt_ref) return res.status(409).json({ ok: false, error: 'OTHER_CHARGE', detail: `${t.tt_number} (${t.batch_number}) already draws from ${t.mmt_ref}.` });
+      // v59P: a tank may draw from several charges — a tank already on another charge takes this one as a further line
       done.push({ l, t });
     }
     const total = +lines.reduce((a, l) => a + l.kg, 0).toFixed(3);
@@ -27980,6 +28054,18 @@ app.post('/api/gpr/mmt/:id/distribute', _v59bSerial(async (req, res) => {   // v
     for (const { l, t } of done) {
       if (pgPool) await pgPool.query(`UPDATE gpr_tt SET virgin_kg=COALESCE(virgin_kg,0)+$1, total_charged_kg=COALESCE(total_charged_kg,0)+$1, mmt_ref=COALESCE(mmt_ref,$2), updated_at=NOW()::TEXT WHERE id=$3`, [l.kg, mmt.mmt_ref, t.id]);
       else db.prepare(`UPDATE gpr_tt SET virgin_kg=COALESCE(virgin_kg,0)+?, total_charged_kg=COALESCE(total_charged_kg,0)+?, mmt_ref=COALESCE(mmt_ref,?), updated_at=datetime('now') WHERE id=?`).run(l.kg, l.kg, mmt.mmt_ref, t.id);
+      try {   // v59P: the distribution is a draw line of this tank from this charge
+        const _seqQ = pgPool ? (await pgPool.query(`SELECT COALESCE(MAX(seq),0) AS m FROM gpr_tt_mmt_draws WHERE tt_id=$1`, [t.id])).rows[0] : db.prepare(`SELECT COALESCE(MAX(seq),0) AS m FROM gpr_tt_mmt_draws WHERE tt_id=?`).get(t.id);
+        const _seq = Number((_seqQ || {}).m || 0) + 1;
+        // a pre-v59P tank with no draws rows: materialise its original draw first so the charge split stays complete
+        if (_seq === 1 && t.mmt_ref && t.mmt_ref !== mmt.mmt_ref && Number(t.virgin_kg || 0) > 0) {
+          if (pgPool) await pgPool.query(`INSERT INTO gpr_tt_mmt_draws (tt_id, mmt_ref, draw_l, virgin_kg, conc_kg_per_l, seq) VALUES ($1,$2,$3,$4,$5,1)`, [t.id, t.mmt_ref, null, Number(t.virgin_kg || 0), null]);
+          else db.prepare(`INSERT INTO gpr_tt_mmt_draws (tt_id, mmt_ref, draw_l, virgin_kg, conc_kg_per_l, seq) VALUES (?,?,?,?,?,1)`).run(t.id, t.mmt_ref, null, Number(t.virgin_kg || 0), null);
+        }
+        const _sq = _seq === 1 && t.mmt_ref && t.mmt_ref !== mmt.mmt_ref ? 2 : _seq;
+        if (pgPool) await pgPool.query(`INSERT INTO gpr_tt_mmt_draws (tt_id, mmt_ref, draw_l, virgin_kg, conc_kg_per_l, seq) VALUES ($1,$2,$3,$4,$5,$6)`, [t.id, mmt.mmt_ref, Number(l.l || 0), Number(l.kg || 0), _concD || null, _sq]);
+        else db.prepare(`INSERT INTO gpr_tt_mmt_draws (tt_id, mmt_ref, draw_l, virgin_kg, conc_kg_per_l, seq) VALUES (?,?,?,?,?,?)`).run(t.id, mmt.mmt_ref, Number(l.l || 0), Number(l.kg || 0), _concD || null, _sq);
+      } catch (e) { console.warn('[v59P distribute] draw row not written:', e.message); }
     }
     if (total > 0) {
       if (pgPool) await pgPool.query(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg+$1, allocated_l=allocated_l+$2, updated_at=NOW()::TEXT WHERE id=$3`, [total, totalL, mmt.id]);
@@ -28151,17 +28237,22 @@ app.get('/api/gpr/mmt/:ref/draws', async (req, res) => {
     const tSql = `SELECT id, tt_number, batch_number, pc_code, machine_id, floor, side, seq_index, seq_total, capacity_l, planned_l, actual_l,
                          virgin_kg, salvage_kg, cutting_kg, colour_kg, fg_remelt_kg, total_charged_kg, status, is_under_fill, production_day,
                          created_at, issued_at, scan_in_at, scan_out_at, created_by
-                  FROM gpr_tt WHERE mmt_ref=${P1} ORDER BY created_at, id`;
-    const tts = pgPool ? (await pgPool.query(tSql, [ref])).rows : db.prepare(tSql).all(ref);
+                  FROM gpr_tt WHERE mmt_ref=${P1} OR id IN (SELECT tt_id FROM gpr_tt_mmt_draws WHERE mmt_ref=${P1}) ORDER BY created_at, id`;   // v59P: + tanks that draw from this charge as a second line
+    let tts; try { tts = pgPool ? (await pgPool.query(tSql, [ref])).rows : db.prepare(tSql).all(ref); }
+    catch (_) { const t0 = tSql.replace(` OR id IN (SELECT tt_id FROM gpr_tt_mmt_draws WHERE mmt_ref=${P1})`, ''); tts = pgPool ? (await pgPool.query(t0, [ref])).rows : db.prepare(t0).all(ref); }
     const aSql = `SELECT * FROM gpr_mmt_alloc WHERE mmt_ref=${P1} ORDER BY allocated_at, id`;
     const allocs = pgPool ? (await pgPool.query(aSql, [ref])).rows : db.prepare(aSql).all(ref);
     const byTt = {}; allocs.forEach(a => { if (a.tt_id != null) byTt[String(a.tt_id)] = a; });
+    const _dmap = await _v59pTtDraws(tts.map(t => t.id));   // v59P: this charge's share of a multi-charge tank
     const draws = tts.map(t => {
-      const kg = Number(t.virgin_kg || 0);
+      const _dl = (_dmap[String(t.id)] || []).find(x => x.mmt_ref === ref);
+      const kg = _dl ? Number(_dl.virgin_kg || 0) : Number(t.virgin_kg || 0);
       const a = byTt[String(t.id)] || null;
+      const _others = (_dmap[String(t.id)] || []).filter(x => x.mmt_ref !== ref).map(x => x.mmt_ref);
       return { kind: 'tt', tt_id: t.id, tt_number: t.tt_number, batch_number: t.batch_number, pc_code: t.pc_code, machine_id: t.machine_id,
                floor: t.floor, side: t.side, seq_index: t.seq_index, seq_total: t.seq_total, capacity_l: t.capacity_l, actual_l: t.actual_l,
-               virgin_kg: kg, drawn_l: +(conc > 0 ? kg / conc : 0).toFixed(1), status: t.status, is_under_fill: !!t.is_under_fill,
+               virgin_kg: kg, drawn_l: _dl ? Number(_dl.draw_l || 0) : +(conc > 0 ? kg / conc : 0).toFixed(1), status: t.status, is_under_fill: !!t.is_under_fill,
+               also_from: _others.length ? _others.join(' + ') : null, tank_virgin_kg: Number(t.virgin_kg || 0),   // v59P
                production_day: t.production_day, prepared_at: t.created_at, issued_at: t.issued_at, scan_in_at: t.scan_in_at, scan_out_at: t.scan_out_at, by: t.created_by,
                alloc_id: a ? a.id : null, alloc_seq: a ? a.alloc_seq : null, allocated_at: a ? a.allocated_at : null };
     });
@@ -28233,14 +28324,61 @@ function _gprMmtConc(mmt, masters) {
 // in the MMT). allocated_l = Σ prepared tanks' virgin kg ÷ the charge's concentration + litres still
 // reserved by un-prepared allocations; allocated_kg = Σ virgin kg + reserved kg. A charge the system
 // closed as "exhausted" on the wrong basis is reopened when the rebuilt position has litres left.
+// ═══ v59P — a tank's draws from its MMT charges (migration 94) ═══════════════════════════════════════
+// Rows in gpr_tt_mmt_draws are the record for tanks saved from v59P on; a tank with no rows there is read as
+// one draw of (gpr_tt.mmt_ref, gpr_tt.virgin_kg) exactly as before. Every reader of "which charge(s) fed this
+// tank" and "how much did the tanks take from this charge" goes through these two helpers.
+async function _v59pTtDraws(ttIds) {
+  const ids = [...new Set((ttIds || []).map(x => Number(x)).filter(x => Number.isFinite(x) && x > 0))];
+  const out = {}; if (!ids.length) return out;
+  try {
+    const ph = ids.map((_, i) => pgPool ? '$' + (i + 1) : '?').join(',');
+    const sql = `SELECT id, tt_id, mmt_ref, draw_l, virgin_kg, conc_kg_per_l, alloc_id, seq FROM gpr_tt_mmt_draws WHERE tt_id IN (${ph}) ORDER BY tt_id, seq, id`;
+    const rows = pgPool ? (await pgPool.query(sql, ids)).rows : db.prepare(sql).all(...ids);
+    (rows || []).forEach(r => { (out[String(r.tt_id)] = out[String(r.tt_id)] || []).push({ id: r.id, mmt_ref: r.mmt_ref, draw_l: +Number(r.draw_l || 0).toFixed(1), virgin_kg: +Number(r.virgin_kg || 0).toFixed(3), conc_kg_per_l: r.conc_kg_per_l != null ? Number(r.conc_kg_per_l) : null, alloc_id: r.alloc_id, seq: r.seq }); });
+  } catch (e) { /* table absent before migration 94 — every tank reads as a single draw */ }
+  return out;
+}
+// decorate tank rows (id, mmt_ref, virgin_kg) with mmt_draws[] and mmt_refs ("A + B") — single-charge tanks unchanged
+async function _v59pDecorateTanks(rows) {
+  const list = (rows || []).filter(r => r && r.id != null);
+  const map = await _v59pTtDraws(list.map(r => r.id));
+  for (const r of list) {
+    const d = map[String(r.id)];
+    if (d && d.length) { r.mmt_draws = d; r.mmt_refs = d.map(x => x.mmt_ref).join(' + '); if (!r.mmt_ref) r.mmt_ref = d[0].mmt_ref; }
+    else { r.mmt_draws = r.mmt_ref ? [{ mmt_ref: r.mmt_ref, draw_l: null, virgin_kg: +Number(r.virgin_kg || 0).toFixed(3), legacy: true }] : []; r.mmt_refs = r.mmt_ref || ''; }
+  }
+  return rows;
+}
+// per charge: virgin kg and tank count taken by tanks — draws rows where they exist, the tank row otherwise
+async function _v59pChargeTakeByTanks(refs) {
+  const out = {};
+  try {
+    let dRows, tRows;
+    if (refs && refs.length) {
+      const ph = refs.map((_, i) => pgPool ? '$' + (i + 1) : '?').join(',');
+      dRows = pgPool ? (await pgPool.query(`SELECT mmt_ref, tt_id, virgin_kg, draw_l FROM gpr_tt_mmt_draws WHERE mmt_ref IN (${ph})`, refs)).rows : db.prepare(`SELECT mmt_ref, tt_id, virgin_kg, draw_l FROM gpr_tt_mmt_draws WHERE mmt_ref IN (${ph})`).all(...refs);
+      tRows = pgPool ? (await pgPool.query(`SELECT id, mmt_ref, virgin_kg, floor FROM gpr_tt WHERE mmt_ref IN (${ph})`, refs)).rows : db.prepare(`SELECT id, mmt_ref, virgin_kg, floor FROM gpr_tt WHERE mmt_ref IN (${ph})`).all(...refs);
+    } else {
+      dRows = pgPool ? (await pgPool.query(`SELECT mmt_ref, tt_id, virgin_kg, draw_l FROM gpr_tt_mmt_draws`)).rows : db.prepare(`SELECT mmt_ref, tt_id, virgin_kg, draw_l FROM gpr_tt_mmt_draws`).all();
+      tRows = pgPool ? (await pgPool.query(`SELECT id, mmt_ref, virgin_kg, floor FROM gpr_tt WHERE mmt_ref IS NOT NULL AND mmt_ref <> ''`)).rows : db.prepare(`SELECT id, mmt_ref, virgin_kg, floor FROM gpr_tt WHERE mmt_ref IS NOT NULL AND mmt_ref <> ''`).all();
+    }
+    const withDraws = new Set((dRows || []).map(r => String(r.tt_id)));
+    const add = (ref, kg, l, ttId, floor) => { const o = out[ref] = out[ref] || { mmt_ref: ref, kg: 0, l: 0, n: 0, tanks: [], byFloor: {} }; o.kg += Number(kg || 0); o.l += Number(l || 0); o.n += 1; o.tanks.push(ttId); if (floor) o.byFloor[floor] = (o.byFloor[floor] || 0) + Number(kg || 0); };
+    const floorOf = {}; (tRows || []).forEach(t => { floorOf[String(t.id)] = t.floor; });
+    (dRows || []).forEach(r => add(r.mmt_ref, r.virgin_kg, r.draw_l, r.tt_id, floorOf[String(r.tt_id)]));
+    (tRows || []).forEach(t => { if (!withDraws.has(String(t.id))) add(t.mmt_ref, t.virgin_kg, null, t.id, t.floor); });
+    Object.values(out).forEach(o => { o.kg = +o.kg.toFixed(3); o.l = +o.l.toFixed(1); });
+  } catch (e) { console.warn('[v59P charge-take] failed:', e.message); }
+  return out;
+}
 // Idempotent; runs once at boot and on demand (POST /api/gpr/mmt/recompute).
 async function _v58bRebuildMmtPositions(session, ip) {
   const masters = await gprLoadMasters();
   const P = (n) => pgPool ? '$' + n : '?';
   const charges = pgPool ? (await pgPool.query(`SELECT * FROM gpr_mmt_charges`)).rows : db.prepare(`SELECT * FROM gpr_mmt_charges`).all();
-  const ttSql = `SELECT mmt_ref, COALESCE(SUM(virgin_kg),0) AS kg, COUNT(*) AS n FROM gpr_tt WHERE mmt_ref IS NOT NULL AND mmt_ref <> '' GROUP BY mmt_ref`;
   const alSql = `SELECT mmt_ref, COALESCE(SUM(planned_l),0) AS l, COALESCE(SUM(reserved_kg),0) AS kg FROM gpr_mmt_alloc WHERE status='allocated' GROUP BY mmt_ref`;
-  const tts = {}; (pgPool ? (await pgPool.query(ttSql)).rows : db.prepare(ttSql).all()).forEach(r => { tts[r.mmt_ref] = r; });
+  const tts = await _v59pChargeTakeByTanks(null);   // v59P: a tank may draw from several charges — per-charge take via the draws rows
   const als = {}; (pgPool ? (await pgPool.query(alSql)).rows : db.prepare(alSql).all()).forEach(r => { als[r.mmt_ref] = r; });
   let fixed = 0, reopened = 0; const log = [];
   for (const c of charges) {
@@ -28763,52 +28901,75 @@ app.post('/api/gpr/tt', _v59bSerial(async (req, res) => {   // v59B: serialised
     // from the TT tab's allocated-tank list; a tank entered without one (New TT entry / Planning
     // route) but linked to the same charge is matched to the oldest open allocation for its
     // batch and side, so every one of the three flows draws the reservation down.
-    let alloc = null;
+    // ═══ v59P (Ishan, 7 Nov — from the floor): ONE TANK, SEVERAL CHARGES ═══════════════════════════════
+    // The last 35 L of a charge were allocated to a tank that needs 100 L; the system refused the other
+    // 65 L because that charge had nothing left, so a half-filled tank went to the machine. A tank may now
+    // draw from any number of open charges: body.mmt_draws = [{ mmt_ref, draw_l, alloc_id? }, …]. Each line
+    // is checked against ITS charge (the charge never goes negative — v57W), priced at ITS charge's
+    // concentration (v57U), settles ITS allocation (v57L) and auto-closes ITS charge when drawn to the last
+    // litre (v57W). The tank's virgin kg is the sum of the lines. A body with the old single mmt_ref /
+    // virgin_kg / alloc_id is read as one line, so nothing that calls this route today changes.
+    const _mastersMmt = masters;
+    let draws = Array.isArray(b.mmt_draws) ? b.mmt_draws.map(d => ({ mmt_ref: String((d && d.mmt_ref) || '').trim(), draw_l: Number((d && d.draw_l) || 0) || 0, alloc_id: (d && d.alloc_id) ? Number(d.alloc_id) : null })).filter(d => d.mmt_ref) : [];
+    if (!draws.length && (b.mmt_ref || b.alloc_id)) draws = [{ mmt_ref: String(b.mmt_ref || '').trim(), draw_l: 0, alloc_id: b.alloc_id ? Number(b.alloc_id) : null, legacySingle: true }];
+    { const seen = new Set(); for (const d of draws) { if (d.mmt_ref && seen.has(d.mmt_ref)) return res.status(400).json({ ok: false, error: 'DUPLICATE_CHARGE_LINE', detail: `MMT ${d.mmt_ref} appears twice — one line per charge.` }); seen.add(d.mmt_ref); } }
+    let alloc = null;            // first settled allocation (response compatibility)
+    let mmtWarning = null;
+    let _mmtDrawL = 0;           // total litres drawn across charges
+    let _virginFromDraws = 0;    // total virgin kg across charges
+    const _settle = [];          // per line: { mmt_ref, draw_l, kg, conc, alloc }
     {
       const P1 = pgPool ? '$1' : '?';
-      if (b.alloc_id) {
-        alloc = pgPool ? (await pgPool.query(`SELECT * FROM gpr_mmt_alloc WHERE id=${P1}`, [Number(b.alloc_id)])).rows[0]
-                       : db.prepare(`SELECT * FROM gpr_mmt_alloc WHERE id=?`).get(Number(b.alloc_id));
-        if (!alloc) return res.status(404).json({ ok: false, error: 'Allocation not found' });
-        if (alloc.status !== 'allocated') return res.status(409).json({ ok: false, error: 'ALLOC_NOT_OPEN', detail: `Allocation ${alloc.id} is already ${alloc.status}.` });
-        if (String(alloc.batch_number).toUpperCase() !== bn || String(alloc.side).toLowerCase() !== side) {
-          return res.status(409).json({ ok: false, error: 'ALLOC_MISMATCH', detail: `Allocation ${alloc.id} is for ${alloc.batch_number} ${String(alloc.side).toUpperCase()}, not ${bn} ${side.toUpperCase()}.` });
+      const _takenAlloc = new Set();
+      for (const d of draws) {
+        let a = null;
+        if (d.alloc_id) {
+          a = pgPool ? (await pgPool.query(`SELECT * FROM gpr_mmt_alloc WHERE id=${P1}`, [Number(d.alloc_id)])).rows[0]
+                     : db.prepare(`SELECT * FROM gpr_mmt_alloc WHERE id=?`).get(Number(d.alloc_id));
+          if (!a) return res.status(404).json({ ok: false, error: 'Allocation not found' });
+          if (a.status !== 'allocated') return res.status(409).json({ ok: false, error: 'ALLOC_NOT_OPEN', detail: `Allocation ${a.id} is already ${a.status}.` });
+          if (String(a.batch_number).toUpperCase() !== bn || String(a.side).toLowerCase() !== side) {
+            return res.status(409).json({ ok: false, error: 'ALLOC_MISMATCH', detail: `Allocation ${a.id} is for ${a.batch_number} ${String(a.side).toUpperCase()}, not ${bn} ${side.toUpperCase()}.` });
+          }
+          if (!d.mmt_ref) d.mmt_ref = a.mmt_ref;
+          else if (String(d.mmt_ref) !== String(a.mmt_ref)) return res.status(409).json({ ok: false, error: 'ALLOC_OTHER_CHARGE', detail: `Allocation ${a.id} draws from ${a.mmt_ref}, not ${d.mmt_ref}.` });
+        } else if (d.mmt_ref) {
+          const aSql = `SELECT * FROM gpr_mmt_alloc WHERE mmt_ref=${P1} AND UPPER(batch_number)=${pgPool ? '$2' : '?'} AND side=${pgPool ? '$3' : '?'} AND status='allocated' ORDER BY alloc_seq ASC, id ASC`;
+          const cands = pgPool ? (await pgPool.query(aSql, [d.mmt_ref, bn, side])).rows : db.prepare(aSql).all(d.mmt_ref, bn, side);
+          a = (cands || []).find(x => !_takenAlloc.has(String(x.id))) || null;
+          if (a) d.alloc_id = a.id;
         }
-        if (!b.mmt_ref) b.mmt_ref = alloc.mmt_ref;
-        else if (String(b.mmt_ref) !== String(alloc.mmt_ref)) return res.status(409).json({ ok: false, error: 'ALLOC_OTHER_CHARGE', detail: `Allocation ${alloc.id} draws from ${alloc.mmt_ref}, not ${b.mmt_ref}.` });
-      } else if (b.mmt_ref) {
-        const aSql = `SELECT * FROM gpr_mmt_alloc WHERE mmt_ref=${P1} AND UPPER(batch_number)=${pgPool ? '$2' : '?'} AND side=${pgPool ? '$3' : '?'} AND status='allocated' ORDER BY alloc_seq ASC, id ASC LIMIT 1`;
-        alloc = pgPool ? (await pgPool.query(aSql, [b.mmt_ref, bn, side])).rows[0] : db.prepare(aSql).get(b.mmt_ref, bn, side);
+        if (a) _takenAlloc.add(String(a.id));
+        const mSql = `SELECT mmt_ref, total_kg, allocated_kg, total_l, allocated_l, conc_kg_per_l, status FROM gpr_mmt_charges WHERE mmt_ref=${P1}`;
+        const mmt = pgPool ? (await pgPool.query(mSql, [d.mmt_ref])).rows[0] : db.prepare(mSql).get(d.mmt_ref);
+        if (!mmt) return res.status(404).json({ ok: false, error: 'Linked MMT charge not found', detail: `MMT ${d.mmt_ref} was not found.` });
+        const conc = _gprMmtConc(mmt, _mastersMmt);
+        // v58B (Rahul via Ishan, 9 Oct — charge 1449): what a tank DRAWS from the charge is the MMT solution carrying
+        // its virgin gelatine = virgin kg ÷ the charge's own concentration. The tank's own litres never move the charge.
+        let kg, L;
+        if (d.legacySingle) { kg = Number(b.virgin_kg || 0); L = kg > 0 && conc > 0 ? +(kg / conc).toFixed(1) : 0; }
+        else { L = +Number(d.draw_l || 0).toFixed(1); kg = +(L * conc).toFixed(3); }
+        const remaining = Number(mmt.total_kg || 0) - Number(mmt.allocated_kg || 0) + (a ? Number(a.reserved_kg || 0) : 0);   // v57L: this tank's own reservation is available to it
+        const remainingL = Number(mmt.total_l || 0) - Number(mmt.allocated_l || 0) + (a ? Number(a.planned_l || 0) : 0);
+        // v57W (Rahul via Ishan, 7 Oct) — RULING: a charge never goes below zero. A line that would draw more litres
+        // than ITS charge has left is REFUSED; v59P: the chemist takes the balance here and the rest on another line.
+        if (L > remainingL + 0.5) {
+          return res.status(409).json({ ok: false, error: 'CHARGE_EXHAUSTED', mmt_ref: d.mmt_ref, remaining_l: +remainingL.toFixed(1), need_l: L,
+            detail: remainingL > 0.5
+              ? `MMT ${d.mmt_ref} has only ${remainingL.toFixed(0)} L left; this line asks for ${L.toFixed(0)} L. Reduce this line to ${Math.floor(remainingL)} L and add another charge for the rest (+ draw from another charge).`
+              : `MMT ${d.mmt_ref} is exhausted (0 L left). Remove this line and draw from another open charge.` });
+        }
+        if (kg > remaining + 0.001) mmtWarning = (mmtWarning ? mmtWarning + ' ' : '') + `MMT ${d.mmt_ref}: ${kg.toFixed(1)} kg virgin booked against ${remaining.toFixed(1)} kg gelatine basis left.`;
+        _settle.push({ mmt_ref: d.mmt_ref, draw_l: L, kg, conc, alloc: a });
+        _mmtDrawL += L; _virginFromDraws += kg;
+        if (!alloc && a) alloc = a;
+      }
+      _mmtDrawL = +_mmtDrawL.toFixed(1); _virginFromDraws = +_virginFromDraws.toFixed(3);
+      if (draws.length) {
+        b.mmt_ref = draws[0].mmt_ref;                       // the first charge stays on the tank row (every reader of one ref)
         if (alloc) b.alloc_id = alloc.id;
+        if (!draws[0].legacySingle) b.virgin_kg = _virginFromDraws;   // the tank's virgin kg is the sum of the lines, at each charge's own concentration
       }
-    }
-    // MMT allocation — ALERT, never a block (item 6 applies to the whole MMT rule set).
-    let mmtWarning = null;
-    let _mmtDrawL = 0;   // v58B: litres this tank draws from its charge (virgin kg ÷ concentration)
-    if (b.mmt_ref) {
-      const mSql = `SELECT total_kg, allocated_kg, total_l, allocated_l, conc_kg_per_l FROM gpr_mmt_charges WHERE mmt_ref=${pgPool ? '$1' : '?'}`;
-      const mmt = pgPool ? (await pgPool.query(mSql, [b.mmt_ref])).rows[0] : db.prepare(mSql).get(b.mmt_ref);
-      if (!mmt) return res.status(404).json({ ok: false, error: 'Linked MMT charge not found' });
-      const remaining = Number(mmt.total_kg || 0) - Number(mmt.allocated_kg || 0) + (alloc ? Number(alloc.reserved_kg || 0) : 0);   // v57L: this tank's own reservation is available to it
-      const thisKg = Number(b.virgin_kg || 0);
-      const remainingL = Number(mmt.total_l || 0) - Number(mmt.allocated_l || 0) + (alloc ? Number(alloc.planned_l || 0) : 0);
-      // v58B (Rahul via Ishan, 9 Oct — charge 1449): what a tank DRAWS from the charge is the MMT
-      // solution carrying its virgin gelatine = virgin kg ÷ the charge's own concentration (10 kg at
-      // 0.333 kg/L = 30 L). The tank's "actual litres" is its whole volume — reuse material, colour
-      // solution and water included — and was wrongly booked against the charge (145 L for a 10 kg
-      // tank), draining 1050 L to "2 L left" while 645 L stood in the MMT.
-      _mmtDrawL = thisKg > 0 ? +(thisKg / _gprMmtConc(mmt, await gprLoadMasters())).toFixed(1) : 0;
-      const thisL = _mmtDrawL;
-      // v57W (Rahul via Ishan, 7 Oct) — RULING: a charge never goes below zero. A tank that would draw
-      // more litres than the charge has left is REFUSED (supersedes the v56R "alert, never block"
-      // rule for this check); the chemist draws the balance and links the rest to a new charge.
-      if (thisL > remainingL + 0.5) {
-        return res.status(409).json({ ok: false, error: 'CHARGE_EXHAUSTED', remaining_l: +remainingL.toFixed(1), need_l: thisL,
-          detail: remainingL > 0.5
-            ? `MMT ${b.mmt_ref} has only ${remainingL.toFixed(0)} L left; this tank needs ${thisL.toFixed(0)} L. Reduce the litres to ${Math.floor(remainingL)} L, or take a new charge and link it.`
-            : `MMT ${b.mmt_ref} is exhausted (0 L left). Take a new MMT charge and link the tank to it.` });
-      }
-      if (thisKg > remaining + 0.001) mmtWarning = `MMT ${b.mmt_ref}: ${thisKg.toFixed(1)} kg virgin booked against ${remaining.toFixed(1)} kg gelatine basis left.`;
     }
 
     // Sequence within (batch, side)
@@ -28966,22 +29127,33 @@ app.post('/api/gpr/tt', _v59bSerial(async (req, res) => {   // v59B: serialised
     // allocation row becomes 'prepared' and points at this tank.
     // v57U: litres settle alongside kg — the tank's actual litres against the charge's allocated_l
     // (difference to the allocation's planned litres when it settles one; the whole draw otherwise).
-    if (alloc) {
-      const delta = +(virginKg - Number(alloc.reserved_kg || 0)).toFixed(3);
-      const deltaL = +(_mmtDrawL - Number(alloc.planned_l || 0)).toFixed(1);   // v58B: the draw, not the tank volume
-      if (pgPool) {
-        if (delta !== 0 || deltaL !== 0) await pgPool.query(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg+$1, allocated_l=allocated_l+$2, updated_at=NOW()::TEXT WHERE mmt_ref=$3`, [delta, deltaL, alloc.mmt_ref]);
-        await pgPool.query(`UPDATE gpr_mmt_alloc SET status='prepared', tt_id=$1, actual_kg=$2, prepared_at=NOW()::TEXT WHERE id=$3`, [ttId, virginKg, alloc.id]);
-      } else {
-        if (delta !== 0 || deltaL !== 0) db.prepare(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg+?, allocated_l=allocated_l+?, updated_at=datetime('now') WHERE mmt_ref=?`).run(delta, deltaL, alloc.mmt_ref);
-        db.prepare(`UPDATE gpr_mmt_alloc SET status='prepared', tt_id=?, actual_kg=?, prepared_at=datetime('now') WHERE id=?`).run(ttId, virginKg, alloc.id);
+    // v59P: once per DRAW LINE — each charge is moved by its own line, each allocation settled by its own
+    // line, each charge auto-closed on its own; the lines are written to gpr_tt_mmt_draws for every reader.
+    let mmtExhausted = false; const _exhaustedRefs = [];
+    for (let i = 0; i < _settle.length; i++) {
+      const L = _settle[i]; const a = L.alloc;
+      const lineKg = _settle.length === 1 && draws[0] && draws[0].legacySingle ? virginKg : L.kg;
+      if (a) {
+        const delta = +(lineKg - Number(a.reserved_kg || 0)).toFixed(3);
+        const deltaL = +(L.draw_l - Number(a.planned_l || 0)).toFixed(1);   // v58B: the draw, not the tank volume
+        if (pgPool) {
+          if (delta !== 0 || deltaL !== 0) await pgPool.query(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg+$1, allocated_l=allocated_l+$2, updated_at=NOW()::TEXT WHERE mmt_ref=$3`, [delta, deltaL, a.mmt_ref]);
+          await pgPool.query(`UPDATE gpr_mmt_alloc SET status='prepared', tt_id=$1, actual_kg=$2, prepared_at=NOW()::TEXT WHERE id=$3`, [ttId, lineKg, a.id]);
+        } else {
+          if (delta !== 0 || deltaL !== 0) db.prepare(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg+?, allocated_l=allocated_l+?, updated_at=datetime('now') WHERE mmt_ref=?`).run(delta, deltaL, a.mmt_ref);
+          db.prepare(`UPDATE gpr_mmt_alloc SET status='prepared', tt_id=?, actual_kg=?, prepared_at=datetime('now') WHERE id=?`).run(ttId, lineKg, a.id);
+        }
+      } else if (lineKg > 0) {
+        if (pgPool) await pgPool.query(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg+$1, allocated_l=allocated_l+$2, updated_at=NOW()::TEXT WHERE mmt_ref=$3`, [lineKg, L.draw_l, L.mmt_ref]);   // v58B
+        else db.prepare(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg+?, allocated_l=allocated_l+?, updated_at=datetime('now') WHERE mmt_ref=?`).run(lineKg, L.draw_l, L.mmt_ref);
       }
-    } else if (b.mmt_ref && virginKg > 0) {
-      if (pgPool) await pgPool.query(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg+$1, allocated_l=allocated_l+$2, updated_at=NOW()::TEXT WHERE mmt_ref=$3`, [virginKg, _mmtDrawL, b.mmt_ref]);   // v58B
-      else db.prepare(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg+?, allocated_l=allocated_l+?, updated_at=datetime('now') WHERE mmt_ref=?`).run(virginKg, _mmtDrawL, b.mmt_ref);
+      try {
+        if (pgPool) await pgPool.query(`INSERT INTO gpr_tt_mmt_draws (tt_id, mmt_ref, draw_l, virgin_kg, conc_kg_per_l, alloc_id, seq) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [ttId, L.mmt_ref, L.draw_l, lineKg, L.conc || null, a ? a.id : null, i + 1]);
+        else db.prepare(`INSERT INTO gpr_tt_mmt_draws (tt_id, mmt_ref, draw_l, virgin_kg, conc_kg_per_l, alloc_id, seq) VALUES (?,?,?,?,?,?,?)`).run(ttId, L.mmt_ref, L.draw_l, lineKg, L.conc || null, a ? a.id : null, i + 1);
+      } catch (e) { console.warn('[v59P tt-draws] row not written for TT #' + ttId + ' ' + L.mmt_ref + ':', e.message); }
+      const ex = await _gprMmtAutoClose(L.mmt_ref, session, req.ip);   // v57W: zero → closed
+      if (ex) { mmtExhausted = true; _exhaustedRefs.push(L.mmt_ref); }
     }
-    let mmtExhausted = false;
-    if (b.mmt_ref) mmtExhausted = await _gprMmtAutoClose(b.mmt_ref, session, req.ip);   // v57W: zero → closed
 
     // ── LEDGER A postings for this TT ──
     // (a) CONSUMPTION: salvage / cutting charged INTO this tank are material drawn
@@ -29057,7 +29229,8 @@ app.post('/api/gpr/tt', _v59bSerial(async (req, res) => {   // v59B: serialised
       `batch=${bn} ${side} ${ttNumber} ${actualL}L charged=${totalChargedKg}kg${alloc ? ' alloc=' + alloc.id + ' (' + alloc.mmt_ref + ' reserved ' + alloc.reserved_kg + 'kg)' : ''}${returnSolL ? ' return-solution ' + returnSolL + 'L (' + returnSolKg + 'kg) from ' + returnLines.map(l => l.source_batch + ' ' + l.side + ' ' + l.litres + 'L').join(', ') : ''}`, req.ip);
     const _out59b = { ok: true, tt_id: ttId, tt_number: ttNumber, seq_index: seqIndex, return_solution_l: returnSolL, return_solution_kg: returnSolKg,
       label_payload: finalPayload, production_day: pday, total_charged_kg: totalChargedKg,
-      cutting_generated_kg: genCutting, cutting_expected_kg: estCutting, warning: mmtWarning, alloc_id: alloc ? alloc.id : null, mmt_exhausted: mmtExhausted };
+      cutting_generated_kg: genCutting, cutting_expected_kg: estCutting, warning: mmtWarning, alloc_id: alloc ? alloc.id : null, mmt_exhausted: mmtExhausted, mmt_exhausted_refs: _exhaustedRefs,
+                  mmt_draws: _settle.map(L => ({ mmt_ref: L.mmt_ref, draw_l: L.draw_l, virgin_kg: L.kg, alloc_id: L.alloc ? L.alloc.id : null })) };   // v59P
     if (_sk59b) _v59bSeenKeys.set(_sk59b, { at: Date.now(), status: 200, body: _out59b });   // v59B
     res.json(_out59b);
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
@@ -29078,6 +29251,7 @@ app.get('/api/gpr/tt/:batch', async (req, res) => {
     const byTt = {};
     (cols || []).forEach(c => { (byTt[c.tt_id] = byTt[c.tt_id] || []).push({ colourant: c.colourant, grams: c.grams, slot: c.slot }); });
     (tts || []).forEach(t => { t.colourants = byTt[t.id] || []; });
+    try { await _v59pDecorateTanks(tts); } catch (_) {}   // v59P: mmt_refs / mmt_draws per tank
     res.json({ ok: true, tts });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
@@ -29117,6 +29291,7 @@ app.get('/api/gpr/tt-sheet', async (req, res) => {
       charged: a.charged + Number(r.total_charged_kg || 0),
     }), { tt: 0, litres: 0, charged: 0 });
     await _gprEnrichPc(rows);   // v56A item 22
+    try { await _v59pDecorateTanks(rows); } catch (_) {}   // v59P: mmt_refs / mmt_draws per tank
     res.json({ ok: true, rows, totals: {
       tt: totals.tt, litres: +totals.litres.toFixed(1), charged: +totals.charged.toFixed(2) } });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
@@ -29253,6 +29428,7 @@ app.get('/api/gpr/tt-board', async (req, res) => {
       r.short_hold = view === 'released' && h != null && h < minH;
       r.batch_number = String(r.batch_number || '').toUpperCase();
     });
+    try { await _v59pDecorateTanks(rows || []); } catch (_) {}   // v59P
     res.json({ ok: true, view, day, minHoldMin: Math.round(minH * 60), now: nowIso, rows: rows || [] });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
@@ -29577,7 +29753,8 @@ app.get('/api/gpr/performance', async (req, res) => {
         if (String(req.query.includeYield || '') === '1') {
           try { const y = await _v58jYieldMemo(bn, o.status); yv = { yieldPct: y.yieldPct, yieldTarget: y.target, yieldVariance: y.variance, outputKg: y.numerator.total, netMaterialKg: y.denominator.total,
                    packedLakhs: y.numerator.packedLakhs, wipLakhs: y.numerator.wipLakhs, ttCount: y.ttCount, freshMaterialKg: y.denominator.freshMaterialKg, netRecircKg: y.denominator.netRecirc,
-                   salvageRecoveredKg: y.denominator.salvageRecoveredKg, generatedManualKg: y.denominator.generatedManualKg, consumedKg: y.denominator.consumedKg, yieldAvgMg: y.avgMg }; } catch (_) {}
+                   salvageRecoveredKg: y.denominator.salvageRecoveredKg, generatedManualKg: y.denominator.generatedManualKg, consumedKg: y.denominator.consumedKg, yieldAvgMg: y.avgMg,
+                   trkOverCreditKg: _NET.trkOverCreditKg, trkLedgerKg: _NET.trkLedgerKg }; } catch (_) {}   // v59P: stock accepted above Tracking
         }
         rows.push(Object.assign(yv || {}, {
           batch: bn, machineId: o.machineId || '', floor: gprFloorOfMachine(o.machineId, masters) || '',
@@ -30818,6 +30995,7 @@ app.get('/api/gpr/inputs-log', async (req, res) => {
                          COALESCE(production_day, SUBSTR(created_at,1,10)) AS d
                   FROM gpr_tt WHERE ${tConds.join(' AND ')} ORDER BY d, tt_number`;
     const tRows = pgPool ? (await pgPool.query(tSql, tParams)).rows : db.prepare(tSql).all(...tParams);
+    try { await _v59pDecorateTanks(tRows); } catch (_) {}   // v59P: a tank's charges, all of them
     const ids = (tRows || []).map(r => r.id);
     const colByTt = {};
     if (ids.length) {
@@ -30838,7 +31016,7 @@ app.get('/api/gpr/inputs-log', async (req, res) => {
       // consumption; it was being counted a second time on top of the MMT melt. Every virgin draw is
       // internal now; the unlinked ones are flagged so they can be chased.
       if (Number(t.virgin_kg) > 0) rows.push(Object.assign({}, base, {
-        input: 'Virgin gelatine (drawn from MMT)', internal: 1, mmt_ref: t.mmt_ref || null, unlinked: t.mmt_ref ? 0 : 1,
+        input: 'Virgin gelatine (drawn from MMT)', internal: 1, mmt_ref: t.mmt_refs || t.mmt_ref || null, unlinked: t.mmt_ref ? 0 : 1,   // v59P: "A + B" when drawn from several charges
         detail: t.mmt_ref ? null : 'MMT charge not linked on the tank',
         qty: +Number(t.virgin_kg).toFixed(3), unit: 'kg' }));
       if (Number(t.colour_kg) > 0) rows.push(Object.assign({}, base, { input: 'Colour + TiO2', qty: +Number(t.colour_kg).toFixed(3), unit: 'kg' }));
@@ -30868,9 +31046,9 @@ app.get('/api/gpr/inputs-log', async (req, res) => {
     if (ffsfRefs.length) {
       const share = {};
       try {
-        const dSql = `SELECT mmt_ref, floor, SUM(virgin_kg) AS kg FROM gpr_tt WHERE mmt_ref IN (${ffsfRefs.map((_, i) => pgPool ? '$' + (i + 1) : '?').join(',')}) AND floor IN ('1F','2F') GROUP BY mmt_ref, floor`;
-        const dRows = pgPool ? (await pgPool.query(dSql, ffsfRefs)).rows : db.prepare(dSql).all(...ffsfRefs);
-        (dRows || []).forEach(d => { (share[d.mmt_ref] = share[d.mmt_ref] || { '1F': 0, '2F': 0 })[d.floor] += Number(d.kg || 0); });
+        // v59P: per-charge take by floor through the draws rows (a tank may draw from several charges)
+        const _take = await _v59pChargeTakeByTanks(ffsfRefs);
+        Object.values(_take).forEach(o => { const sh = share[o.mmt_ref] = share[o.mmt_ref] || { '1F': 0, '2F': 0 }; ['1F', '2F'].forEach(f => { sh[f] += Number((o.byFloor || {})[f] || 0); }); });
       } catch (e) { console.warn('[v57E inputs-log] FF/SF split read:', e.message); }
       const out = [];
       for (const r of rows) {
