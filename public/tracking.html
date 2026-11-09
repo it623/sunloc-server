@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v59P</title>
+<title>Sunloc Tracking Suite v1.0 · build v59S</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v59P</p>
+      <p>Tracking Suite v1.0 · build v59S</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v59P</p>
+      <p>Tracking Suite v1.0 · build v59S</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -754,8 +754,10 @@ const AVG_WT_STD_KG_PER_LAKH = { '00':12.5, '0':9.8, '1':7.9, '2':6.5, '3':5.2, 
 // v59L (Ishan, 2 Nov 2026 — supersedes the v59J/v59K figures, which were never deployed): exactly THREE packing
 // options remain, each with its own measured tare — 5 Ply Box (Green) 1.500 kg, 5 Ply Box (Blue) 2.000 kg,
 // 5 Ply Box (Blue with HDCL) 2.500 kg. The old three names stay in the table so batches planned with them still weigh.
+// v59R (Ishan, 9 Nov 2026): the third type's inner packing moved from HDCL sheet to aluminium bag — "5 Ply Box (Blue with
+// AL Bag)" at 2.200 kg replaces "Blue with HDCL" in Planning; the HDCL name stays here at 2.500 kg for orders already planned with it.
 const PACK_TARE_KG = { '3 Ply':1.8, '3 Ply with HDCL':2.4, '5 Ply':2.4,
-  '5 Ply Box (Green)':1.5, '5 Ply Box (Blue)':2.0, '5 Ply Box (Blue with HDCL)':2.5 };
+  '5 Ply Box (Green)':1.5, '5 Ply Box (Blue)':2.0, '5 Ply Box (Blue with HDCL)':2.5, '5 Ply Box (Blue with AL Bag)':2.2 };
 
 function _v50eStdAvgWt(size){
   const v = AVG_WT_STD_KG_PER_LAKH[String(size==null?'':size).trim()];
@@ -5354,7 +5356,7 @@ function _v50eComputeRunWeights(){
   const tare = _v50eTareFor(batch);
   if(tare == null){
     return { ok:false, noTare:true, weights:[],
-      reason:`Packing material is not set on order ${batch.batchNumber||''} in Planning, so the carton tare is unknown and Gross Wt cannot be calculated. Ask the Planning Manager to set Packing (3 Ply / 3 Ply with HDCL / 5 Ply) on this order.` };
+      reason:`Packing material is not set on order ${batch.batchNumber||''} in Planning, so the carton tare is unknown and Gross Wt cannot be calculated. Ask the Planning Manager to set Packing (5 Ply Box Green / Blue / Blue with AL Bag) on this order.` };
   }
   const perRun = window._v50eWtMode !== 'box';
   const weights = [];

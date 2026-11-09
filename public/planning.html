@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v59P</p>
+      <p>Planning Suite v3.0 · build v59S</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -2223,7 +2223,10 @@ const STD_AIM_WASTE    = 0.07;  // 7% AIM wastage
 const STD_PRINT_WASTE  = 0.01;  // 1% printing machine wastage
 // v59J (Shri Kant Gupta, 31 Oct 2026): current packing types — 3 Ply eliminated. v59L (Ishan): three 5 Ply box types.
 // Tracking's carton tare table (PACK_TARE_KG) must carry every value listed here.
-const PACKING_TYPES = ['5 Ply Box (Green)','5 Ply Box (Blue)','5 Ply Box (Blue with HDCL)'];   // v59L (Ishan, 2 Nov 2026): three options — tare 1.5 / 2.0 / 2.5 kg in Tracking
+// v59R (Ishan, 9 Nov 2026): the inner packing of the third type changed from HDCL sheet to aluminium bag — "5 Ply Box (Blue
+// with AL Bag)", tare 2.2 kg — replacing "5 Ply Box (Blue with HDCL)" (2.5 kg). Orders already planned with the HDCL
+// option keep it (shown as legacy) and still weigh at 2.5 kg in Tracking; new orders see only the three current types.
+const PACKING_TYPES = ['5 Ply Box (Green)','5 Ply Box (Blue)','5 Ply Box (Blue with AL Bag)'];   // v59R: tare 1.5 / 2.0 / 2.2 kg in Tracking
 // v41d: orders at/above this size (Lakhs) offer the planner a 30/20 dispatch-split choice;
 // smaller orders always ship as a single lot. First lot is 30L, second is the balance.
 const DISPATCH_SPLIT_THRESHOLD = 50;

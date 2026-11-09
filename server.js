@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v59P';
+const APP_BUILD = 'v59S';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -27305,6 +27305,15 @@ async function _v58mRsYieldTerms(bns) {
 //   yield denominator               = gelatine-equivalent + colour / TiO2
 function _v58mNetCalc(i) {
   const n = v => Number(v || 0);
+  // ═══ v59S (Ishan, 9 Nov — "accepted is invariably greater than the salvage shown; let accepted be final") ═══
+  // Tracking salvage enters the ladder at the HIGHER of (a) Tracking's entries now × this batch's label weight and
+  // (b) what the ledger carries for those entries (accepted + pending). The ledger kg is what GPR actually received
+  // into stock and what consuming tanks are charged, so crediting the generating batch any less would break material
+  // conservation; (a) still wins when a new Tracking entry has not yet been synced. The difference is reported
+  // (trkBasis, trkLedgerKg, trackingSalvageKg) — as information, no longer as an "over-credit" alert.
+  const _trkNow = n(i.salvageRecoveredKg), _trkLedger = n(i.genTrkAcceptedKg) + n(i.genTrkPendingKg);
+  const _salvageEff = Math.max(_trkNow, _trkLedger);
+  i = Object.assign({}, i, { salvageRecoveredKg: _salvageEff, trackingSalvageNowKg: _trkNow, trkBasis: _trkLedger > _trkNow + 0.005 ? 'ledger' : 'tracking' });
   const fresh = n(i.virginKg) + n(i.colourKg) + n(i.fgRemeltKg);
   const reuseIn = n(i.consumedKg) + n(i.legacyDrawKg);
   const netRecirc = reuseIn - n(i.generatedManualKg);
@@ -27325,8 +27334,9 @@ function _v58mNetCalc(i) {
            // Tracking figure (salvageRecoveredKg); a positive trkOverCreditKg is stock accepted on an entry that was
            // later reduced — reported, never netted silently.
            trkLedgerKg: r2(n(i.genTrkAcceptedKg) + n(i.genTrkPendingKg)),
-           trkOverCreditKg: r2(Math.max(0, n(i.genTrkAcceptedKg) + n(i.genTrkPendingKg) - n(i.salvageRecoveredKg))),
-           trkUnderCreditKg: r2(Math.max(0, n(i.salvageRecoveredKg) - n(i.genTrkAcceptedKg) - n(i.genTrkPendingKg))),
+           trackingSalvageNowKg: r2(i.trackingSalvageNowKg), trkBasis: i.trkBasis,   // v59S: which figure the ladder used
+           trkOverCreditKg: r2(Math.max(0, n(i.genTrkAcceptedKg) + n(i.genTrkPendingKg) - n(i.trackingSalvageNowKg))),   // v59S: informational (ledger above Tracking's current entries)
+           trkUnderCreditKg: r2(Math.max(0, n(i.trackingSalvageNowKg) - n(i.genTrkAcceptedKg) - n(i.genTrkPendingKg))),
            salvageLakhs: +Number(i.salvageLakhs || 0).toFixed(3), salvageRecoveredKg: r2(i.salvageRecoveredKg), printingSalvageKg: r2(i.printingSalvageKg),   // v58X
            expectedSalvageLakhs: +Number(i.expectedSalvageLakhs || 0).toFixed(3), expectedSalvageKg: r2(i.expectedSalvageKg),
            returnUsedL: +Number(i.returnUsedL || 0).toFixed(2), returnUsedKg: r2(i.returnUsedKg),
@@ -31646,7 +31656,7 @@ async function _v57fDayYield(from, to, floorFilter) {
   const P1 = pgPool ? '$1' : '?', P2 = pgPool ? '$2' : '?';
   const grid = {};
   const cell = (d, fl) => ((grid[d] = grid[d] || {})[fl] = grid[d][fl] || { num: 0, den: 0, batches: 0, working: [], crushKg: 0,
-    material: { virginKg: 0, colourKg: 0, fgRemeltKg: 0, reuseInKg: 0, generatedKg: 0, generatedOwnKg: 0, trackingSalvageKg: 0, returnUsedKg: 0, returnRecoveredKg: 0, tanks: 0,   // v58M: + return solution; v58U: generated split as in the batch working
+    material: { virginKg: 0, colourKg: 0, fgRemeltKg: 0, reuseInKg: 0, generatedKg: 0, generatedOwnKg: 0, trackingSalvageKg: 0, expectedSalvageKg: 0, returnUsedKg: 0, returnRecoveredKg: 0, tanks: 0,   // v59S: + expected WIP salvage   // v58M: + return solution; v58U: generated split as in the batch working
                 reuseCuttingKg: 0, reuseSalvageKg: 0, genCutAcceptedKg: 0, genCutPendingKg: 0, genSalManualAcceptedKg: 0, genSalManualPendingKg: 0, genTrkAcceptedKg: 0, genTrkPendingKg: 0 } });   // v59B: cuttings / salvage, accepted / pending
   // ── material: NET consumption — a tank counts on the production day it was RELEASED to the
   //    machine (Hold & Release), not the day it was charged. Until then it is WIP and stays out of
@@ -31719,6 +31729,10 @@ async function _v57fDayYield(from, to, floorFilter) {
       const outKg = packDayL * mg / 10;                      // lakhs × mg ÷ 10 = kg (as the batch yield)
       const c = cell(r.d, fl);
       c.num += outKg; c.batches += 1;
+      // v59S (Ishan, 9 Nov): the salvage the batch's un-inspected / unprinted WIP is still expected to return comes off
+      // the material side here exactly as in the batch ladder (v58K: numerator and denominator reduced together) —
+      // the batch's forecast kg apportioned to this day by the day's share of its production.
+      c.material.expectedSalvageKg += Number((y.denominator && y.denominator.expectedSalvageKg) || 0) * (dTot > 0 ? dD / dTot : 0);
       c.working.push({ batch: r.bn, avgMg: +mg.toFixed(2), weightBasis: (y.weightBasis && y.weightBasis.basis) || null, aPct: y.numerator.aPct, aBasis: y.numerator.aBasis,
         dprDayL: +dD.toFixed(2), dprToDateL: +dTot.toFixed(2), packableSharePct: +(share * 100).toFixed(1),
         packableDayL: +packDayL.toFixed(3), outputKg: +outKg.toFixed(1) });
@@ -31727,7 +31741,7 @@ async function _v57fDayYield(from, to, floorFilter) {
   // net material per cell
   Object.values(grid).forEach(fls => Object.values(fls).forEach(c => {
     const m = c.material;
-    c.den = Math.max(0, m.virginKg + m.colourKg + m.fgRemeltKg + m.reuseInKg - m.generatedKg + m.returnUsedKg - m.returnRecoveredKg);   // v58M item 8
+    c.den = Math.max(0, m.virginKg + m.colourKg + m.fgRemeltKg + m.reuseInKg - m.generatedKg - m.expectedSalvageKg + m.returnUsedKg - m.returnRecoveredKg);   // v58M item 8; v59S: − expected WIP salvage
     Object.keys(m).forEach(k => { m[k] = +Number(m[k]).toFixed(2); });
   }));
   return grid;
