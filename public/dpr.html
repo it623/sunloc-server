@@ -499,7 +499,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v59S</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v59W</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -560,6 +560,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
       </div>
     </div>
   </div>
+  <div id="dprLoadBanner" style="display:none"></div>   <!-- v59T: load / cache status, never a silent blank -->
   <div class="kgrid" id="dayKpis"></div>
   <div id="shiftsArea"></div>
   <!-- DT collapsible -->
@@ -1056,6 +1057,56 @@ function _localYMD(dt){ const d=dt||new Date(); return `${d.getFullYear()}-${Str
 function today(){ return _localYMD(new Date()); }
 function getDate(){ return document.getElementById('ndate').value || today(); }
 function skey(fl,d){ return `dpr3_${fl}_${d}`; }
+// ═══ v59T (Ishan, 10 Nov — "data entry screens blank while Plant Report / Report E are right") ═══════════
+// ROOT CAUSE: the entry screen rendered ONLY from localStorage, every server pull was written there with a
+// silent try/catch, and nothing was ever pruned — since v59A each day is held twice (record + merge base).
+// A browser caps localStorage at ~5 MB a site; once full, every pull "succeeded" and stored nothing, the
+// screen stayed blank, and the 20-odd unguarded setItem calls in the edit handlers threw mid-keystroke.
+// NOW: day records live in an in-memory store first (this is what the screen reads), localStorage is a
+// best-effort cache behind it. A quota overflow prunes — merge bases older than 10 days first, then the
+// oldest day copies — and retries; if the browser still refuses, the screen keeps working from memory and
+// a banner says the cache is full. A day that could not be fetched shows a banner, never a silent blank.
+const _DPR_MEM = new Map();                 // key → JSON string (dpr3_* day records, dpr3b_* merge bases)
+let _dprStorageFull = false, _dprStorageNote = '';
+const _dprSyncErr = {};                     // fl|d → last fetch failure message
+const _dprLoading = {};                     // fl|d → a pull is in flight
+function _dprIsDprKey(k){ return typeof k==='string' && (k.startsWith('dpr3_') || k.startsWith('dpr3b_')); }
+function _dprLsGet(k){ if(_DPR_MEM.has(k)) return _DPR_MEM.get(k); try{ const v = localStorage.getItem(k); if(v!=null) _DPR_MEM.set(k, v); return v; }catch(_){ return null; } }
+function _dprLsRemove(k){ _DPR_MEM.delete(k); try{ localStorage.removeItem(k); }catch(_){} }
+function _dprLsKeys(){ const out = new Set(_DPR_MEM.keys()); try{ for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k) out.add(k); } }catch(_){} return [...out]; }
+function _dprDayOfKey(k){ const m = /^dpr3b?_[^_]+_(\d{4}-\d{2}-\d{2})$/.exec(k||''); return m ? m[1] : null; }
+// prune the cache: merge bases older than keepBaseDays, then the oldest day copies, until `need` bytes free up (best effort)
+function _dprPruneStorage(need, keepBaseDays){
+  let today = new Date().toISOString().slice(0,10); try{ if(typeof getDate==='function') today = getDate() || today; }catch(_){}
+  const cutBase = new Date(Date.now() - (keepBaseDays||10)*86400000).toISOString().slice(0,10);
+  let freed = 0, n = 0; const keys = _dprLsKeys().filter(_dprIsDprKey);
+  const sizeOf = k => { try{ return (localStorage.getItem(k)||'').length*2; }catch(_){ return 0; } };
+  for(const k of keys){ if(k.startsWith('dpr3b_') && (_dprDayOfKey(k)||'') < cutBase){ freed += sizeOf(k); try{ localStorage.removeItem(k); }catch(_){} n++; } }   // bases: memory copy may go too
+  if(freed < need){
+    const days = keys.filter(k=>k.startsWith('dpr3_')).map(k=>({k, d:_dprDayOfKey(k)||''})).filter(x=>x.d && x.d!==today).sort((a,b)=>a.d<b.d?-1:1);
+    for(const x of days){ if(freed >= need) break; freed += sizeOf(x.k); try{ localStorage.removeItem(x.k); }catch(_){} n++; }   // localStorage only — memory keeps it for this session
+  }
+  if(n) console.warn('[DPR v59T] cache pruned: '+n+' entries, ~'+Math.round(freed/1024)+' KB');
+  return freed;
+}
+function _dprLsSet(k, v){
+  _DPR_MEM.set(k, v);                                      // the screen's source — never fails
+  try{ localStorage.setItem(k, v); if(_dprStorageFull){ _dprStorageFull=false; _dprStorageNote=''; } return true; }
+  catch(e){
+    const quota = /quota|QUOTA|NS_ERROR_DOM_QUOTA|exceeded/i.test(String(e && (e.name+' '+e.message)));
+    if(quota){ _dprPruneStorage(Math.max(v.length*2*4, 256*1024), 10); try{ localStorage.setItem(k, v); _dprStorageFull=false; return true; }catch(e2){} }
+    _dprStorageFull = true; _dprStorageNote = (e && e.name) || 'storage error';
+    console.warn('[DPR v59T] localStorage write failed for '+k+' — working from memory', e && e.message);
+    return false;
+  }
+}
+// boot: hydrate memory from the cache and bound the merge bases
+function _dprBootStorage(){
+  try{ for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(_dprIsDprKey(k)) _DPR_MEM.set(k, localStorage.getItem(k)); } }catch(_){}
+  try{ _dprPruneStorage(0, 10); }catch(_){}
+  try{ let bytes=0; for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(_dprIsDprKey(k)) bytes += (localStorage.getItem(k)||'').length*2; } console.log('[DPR v59T] cache: '+_DPR_MEM.size+' entries, ~'+Math.round(bytes/1024)+' KB'); }catch(_){}
+}
+_dprBootStorage();
 // ═══ v59A (Ishan, 26 Oct) — self-healing sync ═══════════════════════════════════════════════════════════════
 // Every copy of a day this device holds is paired with the SERVER copy it came from (the "base", with its
 // revision). A save sends the base revision and the list of slots that differ from the base; the server
@@ -1064,7 +1115,7 @@ function skey(fl,d){ return `dpr3_${fl}_${d}`; }
 function bkey(fl,d){ return `dpr3b_${fl}_${d}`; }
 // v59B: every local write of a day copy keeps the revision it came from — the keystroke backup wrote a bare
 // collectForm() and silently dropped _rev, so a save after a date change could fall back to a stale base.
-function _dprStoreDay(fl,d,data){ try{ if(data && data._rev===undefined){ const prev=JSON.parse(localStorage.getItem(skey(fl,d))||'null'); if(prev && prev._rev!==undefined) data._rev=prev._rev; } localStorage.setItem(skey(fl,d),JSON.stringify(data)); }catch(_){} }
+function _dprStoreDay(fl,d,data){ try{ if(data && data._rev===undefined){ const prev=JSON.parse(_dprLsGet(skey(fl,d))||'null'); if(prev && prev._rev!==undefined) data._rev=prev._rev; } _dprLsSet(skey(fl,d),JSON.stringify(data)); }catch(_){} }
 function _dprDeviceId(){
   try{
     let id = localStorage.getItem('dpr_device_id');
@@ -1073,8 +1124,8 @@ function _dprDeviceId(){
     return label ? (label.replace(/[^\w .-]/g,'').slice(0,32) + '/' + id) : id;
   }catch(_){ return 'nostorage'; }
 }
-function _dprLoadBase(fl,d){ try{ const r = localStorage.getItem(bkey(fl,d)); return r ? JSON.parse(r) : null; }catch(_){ return null; } }
-function _dprSetBase(fl,d,rev,data){ try{ if(data) localStorage.setItem(bkey(fl,d), JSON.stringify({rev: Number(rev)||0, data})); }catch(_){} }
+function _dprLoadBase(fl,d){ try{ const r = _dprLsGet(bkey(fl,d)); return r ? JSON.parse(r) : null; }catch(_){ return null; } }
+function _dprSetBase(fl,d,rev,data){ try{ if(data) _dprLsSet(bkey(fl,d), JSON.stringify({rev: Number(rev)||0, data})); }catch(_){} }
 // canonical form of a slot — blank lines and empty strings do not count as a difference
 function _dprSlotSig(x){
   if(x==null) return '';
@@ -1114,11 +1165,11 @@ function _dprMergeOnto(serverData, localData, dirty){
 function _dprAcceptServer(fl,d,serverData,rev,savedAt,opts){
   opts=opts||{};
   const onScreen = (fl===curFloor && d===getDate() && document.getElementById('page-entry')?.classList.contains('on'));
-  let local=null; try{ local = (onScreen && !opts.noDom && typeof collectForm==='function') ? collectForm() : JSON.parse(localStorage.getItem(skey(fl,d))||'null'); }catch(_){ local=null; }
+  let local=null; try{ local = (onScreen && !opts.noDom && typeof collectForm==='function') ? collectForm() : JSON.parse(_dprLsGet(skey(fl,d))||'null'); }catch(_){ local=null; }
   const dirty = (local && !opts.force) ? (_dprDirtySlots(fl,d,local)||[]) : [];
   const held = (dirty.length && local) ? _dprMergeOnto(serverData, local, dirty) : JSON.parse(JSON.stringify(serverData||{}));
   held._rev = Number(rev)||0; held._savedAt = savedAt ? new Date(savedAt).getTime() : Date.now();
-  try{ localStorage.setItem(skey(fl,d), JSON.stringify(held)); }catch(_){}
+  try{ _dprLsSet(skey(fl,d), JSON.stringify(held)); }catch(_){}
   _dprSetBase(fl,d,rev,serverData);
   return { data: held, kept: dirty };
 }
@@ -1269,7 +1320,7 @@ function onDprMonthChange(ym) {
 // Helper: get all DPR dates for selected month
 function getDprMonthDates(fl) {
   const prefix = `dpr3_${fl}_${_dprSelectedMonth}`;
-  return Object.keys(localStorage)
+  return _dprLsKeys()
     .filter(k => k.startsWith(prefix))
     .map(k => k.split('_')[2])
     .filter(d => d && d.startsWith(_dprSelectedMonth))
@@ -1278,7 +1329,7 @@ function getDprMonthDates(fl) {
 
 // Helper: get all DPR dates up to and including selected month
 function getDprCumulativeDates(fl) {
-  return Object.keys(localStorage)
+  return _dprLsKeys()
     .filter(k => k.startsWith(`dpr3_${fl}_`))
     .map(k => k.split('_')[2])
     .filter(d => d && d <= _dprSelectedMonth + '-31')
@@ -1546,7 +1597,7 @@ function mcCut(m){
 function blankDay(fl){ return {floor:fl,shifts:{A:blankShift(fl),B:blankShift(fl),C:blankShift(fl)},remarks:[],resort:[]}; }
 
 function loadDay(fl,d){
-  const raw=localStorage.getItem(skey(fl,d));
+  const raw=_dprLsGet(skey(fl,d));
   if(!raw) return blankDay(fl);
   try{
     const p=JSON.parse(raw);
@@ -1569,17 +1620,20 @@ async function syncFromServer(fl, d){
   if(unsaved && fl === curFloor && d === getDate()) return;
   // Never sync if a save is pending for this floor/date
   if(_dprPendingSaves.has(fl+'|'+d)) return;
-  // Never sync within 60 seconds of any save — gives server time to process and protects fresh data
-  if((Date.now() - _dprLastSaveTime) < 60000) return;
+  // Never sync within 60 seconds of a save OF THIS floor+date — gives server time to process and protects fresh data
+  // (v59T: was any save at all, which left every other day blank for a minute after each save on an empty cache)
+  if((Date.now() - _dprLastSaveTime) < 60000 && _dprLastSaveKey === fl+'|'+d) return;
+  _dprLoading[fl+'|'+d] = true; _dprLoadBanner();   // v59T: "loading…" instead of a blank while the first pull runs
   try{
     const r=await fetch(serverUrl+'/api/dpr/'+encodeURIComponent(fl)+'/'+d, {signal:AbortSignal.timeout(8000)});
-    if(!r.ok) return;
+    if(!r.ok){ _dprSyncErr[fl+'|'+d] = 'server answered '+r.status; _dprLoadBanner(); return; }
+    delete _dprSyncErr[fl+'|'+d]; _dprLoadBanner();
     const j=await r.json();
     if(j.data){
       // v59A: freshness by revision. Same revision → nothing to do. Different → take the server copy,
       // keeping only the slots this device changed since the copy it holds (none, for an idle tablet).
       if(j.rev!==undefined && j.rev!==null){
-        const localRaw = localStorage.getItem(skey(fl,d));
+        const localRaw = _dprLsGet(skey(fl,d));
         let localRev = null; try{ localRev = localRaw ? JSON.parse(localRaw)._rev : null; }catch(_){}
         if(localRev!==Number(j.rev) || !_dprLoadBase(fl,d)){
           const R=_dprAcceptServer(fl,d,j.data,j.rev,j.savedAt);
@@ -1589,16 +1643,17 @@ async function syncFromServer(fl, d){
       }
       // (pre-v59A server) Only update localStorage if server savedAt is after our last save time
       const serverSavedAt = j.savedAt ? new Date(j.savedAt).getTime() : 0;
-      const localRaw = localStorage.getItem(skey(fl,d));
+      const localRaw = _dprLsGet(skey(fl,d));
       const localSavedAt = localRaw ? (JSON.parse(localRaw)._savedAt || 0) : 0;
       // Server data must be significantly newer than local data (>5s gap)
       if(serverSavedAt > localSavedAt + 5000){
         j.data._savedAt = serverSavedAt;
-        localStorage.setItem(skey(fl,d), JSON.stringify(j.data));
+        _dprLsSet(skey(fl,d), JSON.stringify(j.data));
         console.log('[DPR] Synced from server:', fl, d);
       }
     }
-  }catch(e){ console.warn('[DPR] syncFromServer failed:', e?.message); }
+  }catch(e){ console.warn('[DPR] syncFromServer failed:', e?.message); _dprSyncErr[fl+'|'+d] = (e && e.name==='TimeoutError') ? 'no answer from the server in 8 s' : ((e && e.message) || 'network error'); }
+  finally{ delete _dprLoading[fl+'|'+d]; _dprLoadBanner(); }
 }
 
 function validateBeforeSave(){
@@ -1639,7 +1694,7 @@ function saveDay(){
   }
   const fl=curFloor, d=getDate();
   // If localStorage empty (browser history cleared), fetch from server first
-  const localRaw = localStorage.getItem(skey(fl,d));
+  const localRaw = _dprLsGet(skey(fl,d));
   if (!localRaw) {
     toast('⏳ Loading server data before save...', 'var(--amber)', 3000);
     syncFromServer(fl, d).then(() => { _doSaveDay(fl, d); });
@@ -1650,10 +1705,11 @@ function saveDay(){
 function _doSaveDay(fl, d){
   const data=collectForm();
   data._savedAt = Date.now();
-  try{ const prev=JSON.parse(localStorage.getItem(skey(fl,d))||'null'); if(prev && prev._rev!==undefined) data._rev=prev._rev; }catch(_){}   // v59A: carry the revision this copy came from
-  localStorage.setItem(skey(fl,d),JSON.stringify(data));
+  try{ const prev=JSON.parse(_dprLsGet(skey(fl,d))||'null'); if(prev && prev._rev!==undefined) data._rev=prev._rev; }catch(_){}   // v59A: carry the revision this copy came from
+  _dprLsSet(skey(fl,d),JSON.stringify(data));
   setUnsaved(false);
   _dprLastSaveTime = Date.now(); // block fetch for 10s after save
+  _dprLastSaveKey = fl+'|'+d;   // v59T
   markDprDatesDirty(fl); // v41ZG #5: a (possibly new) date was saved — let range syncs rediscover it
   pushToServer(fl,d,data); // goes to server regardless
   renderDayKpis();
@@ -1799,6 +1855,7 @@ let _dprPendingSaves = new Map(); // keyed by "fl|d" — no save is ever overwri
 const _dprInFlight = new Set();
 let _dprRetryTimer = null;
 let _dprLastSaveTime = 0; // timestamp of last save — blocks fetch for 10s after save
+let _dprLastSaveKey = ''; // v59T: floor|date of that save — only that day's pull is held back
 let _suppressRenderShifts = false;
 function _updatePendingBadge(){
   const badge=document.getElementById('syncBadge');
@@ -1904,17 +1961,17 @@ async function _dprPushRawInner(fl,d,data){
           if(j.merged>0) toast('✓ Saved — your '+j.merged+' change(s) were merged with entries made on other devices.','var(--green)',5000);
           if(fl===curFloor && d===getDate()){ try{ renderShifts(); renderRemarks(); renderResort(); renderDayKpis(); }catch(_){} }
         } else if(j.rev!==undefined && j.rev!==null){
-          const raw=localStorage.getItem(skey(fl,d));
+          const raw=_dprLsGet(skey(fl,d));
           const saved=raw?JSON.parse(raw):data; saved._rev=Number(j.rev); if(j.savedAt) saved._savedAt=new Date(j.savedAt).getTime();
-          localStorage.setItem(skey(fl,d),JSON.stringify(saved));
+          _dprLsSet(skey(fl,d),JSON.stringify(saved));
           const b={...saved}; delete b._rev; delete b._savedAt; _dprSetBase(fl,d,j.rev,b);
         }
         if(j.savedAt){
-          const raw=localStorage.getItem(skey(fl,d));
+          const raw=_dprLsGet(skey(fl,d));
           if(raw){
             const saved=JSON.parse(raw);
             saved._savedAt=new Date(j.savedAt).getTime();
-            localStorage.setItem(skey(fl,d),JSON.stringify(saved));
+            _dprLsSet(skey(fl,d),JSON.stringify(saved));
           }
         }
         // v40 P18.14i Fix 2: Surface gate rejections to the operator. Server returns
@@ -1957,7 +2014,7 @@ async function _dprPushRawInner(fl,d,data){
           const pre = fl+'|'+d+'|';
           Object.keys(window._dprRefused).forEach(k=>{ if(k.indexOf(pre)===0) delete window._dprRefused[k]; });
           if (Array.isArray(j.refused) && j.refused.length) {
-            const raw = localStorage.getItem(skey(fl,d));
+            const raw = _dprLsGet(skey(fl,d));
             const loc = raw ? JSON.parse(raw) : null;
             j.refused.forEach(rf=>{
               window._dprRefused[pre+rf.shift+'|'+rf.machineId+'|'+rf.runIndex] = rf;
@@ -1965,7 +2022,7 @@ async function _dprPushRawInner(fl,d,data){
                 && (loc.shifts[rf.shift].machines[rf.machineId].runs||[])[rf.runIndex];
               if (run) run.qty = rf.recorded > 0 ? Number(rf.recorded).toFixed(2) : '';
             });
-            if (loc) localStorage.setItem(skey(fl,d), JSON.stringify(loc));
+            if (loc) _dprLsSet(skey(fl,d), JSON.stringify(loc));
             if (fl===curFloor && d===getDate() && !_userIsFocused()) { renderShifts(); renderDayKpis(); }
           }
         } catch(_e56u) {}
@@ -2004,7 +2061,7 @@ async function dprRestoreDay(logId, fl, d, total){
   try{
     const r = await fetch(serverUrl+'/api/dpr/restore-day', { method:'POST', headers:{'Content-Type':'application/json','X-User-Role':(dprUser?.role||'')}, body: JSON.stringify({ logId, userRole: dprUser?.role||'', userName: dprUser?.username||dprUser?.name||'' }), signal:AbortSignal.timeout(20000) });
     const j = await r.json(); if(!j.ok) throw new Error(j.error||'failed');
-    localStorage.removeItem(skey(fl,d)); _dprPendingSaves.delete(fl+'|'+d);
+    _dprLsRemove(skey(fl,d)); _dprPendingSaves.delete(fl+'|'+d);
     alert('Restored: '+j.rows+' rows, '+j.total+' L for '+fl+' '+d+'. Every device will pick up the restored day on its next load.');
     dprLoadSaveLog();
     if (fl===curFloor && d===getDate()) { await _dprReloadDayFromServer(fl, d); }
@@ -2023,7 +2080,7 @@ async function _dprReloadDayFromServer(fl, d){
     const r = await fetch(serverUrl+'/api/dpr/'+encodeURIComponent(fl)+'/'+d, {signal:AbortSignal.timeout(8000)});
     const j = r.ok ? await r.json() : null;
     if (j && j.data) { _dprAcceptServer(fl,d,j.data,j.rev||0,j.savedAt,{force:true}); }   // v59A
-    else { localStorage.removeItem(skey(fl,d)); localStorage.removeItem(bkey(fl,d)); }
+    else { _dprLsRemove(skey(fl,d)); _dprLsRemove(bkey(fl,d)); }
   }catch(e){ console.warn('[v58Y] reload failed', e?.message); }
   _dprPendingSaves.delete(fl+'|'+d);
   if (fl===curFloor && d===getDate()) { try { renderShifts(); renderDayKpis(); } catch(_){} }
@@ -2045,7 +2102,7 @@ function _dprShrinkBlocked(fl, d, j){
     <div style="max-height:180px;overflow:auto;margin:8px 0;border:1px solid #e5e7eb;border-radius:6px"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:#f3f4f6"><th style="text-align:left;padding:3px 8px">Machine</th><th style="text-align:left;padding:3px 8px">Shift</th><th style="text-align:right;padding:3px 8px">L entered</th></tr></thead><tbody>${rows}</tbody></table></div>
     <div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;padding:8px 10px;font-size:12px">This happens when a device's copy of the day is older than the server's (a tablet that opened the day earlier, or a save queued while offline). <b>Nothing was written.</b> ${isAdmin ? 'Reload the day from the server, then re-enter only your own correction and save again.' : 'This device\'s copy has been replaced with the server\'s; re-enter only your own correction and save again.'}</div>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;flex-wrap:wrap">
-      ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="(window._dprConfirmShrink=window._dprConfirmShrink||{})['${fl}|${d}']=true;document.getElementById('dpr-shrink-modal').remove();_dprPushRaw('${fl}','${d}',JSON.parse(localStorage.getItem(skey('${fl}','${d}'))||'{}')).then(()=>{delete window._dprConfirmShrink['${fl}|${d}'];})" style="border-color:#b91c1c;color:#b91c1c" title="Admin only — writes this device's figures and removes the listed entries (audited)">Admin: remove anyway</button>` : ''}
+      ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="(window._dprConfirmShrink=window._dprConfirmShrink||{})['${fl}|${d}']=true;document.getElementById('dpr-shrink-modal').remove();_dprPushRaw('${fl}','${d}',JSON.parse(_dprLsGet(skey('${fl}','${d}'))||'{}')).then(()=>{delete window._dprConfirmShrink['${fl}|${d}'];})" style="border-color:#b91c1c;color:#b91c1c" title="Admin only — writes this device's figures and removes the listed entries (audited)">Admin: remove anyway</button>` : ''}
       <button class="btn btn-primary btn-sm" onclick="document.getElementById('dpr-shrink-modal').remove();_dprReloadDayFromServer('${fl}','${d}')">${isAdmin ? 'Reload the day from server' : 'OK'}</button>
     </div></div>`;
   document.body.appendChild(wrap);
@@ -2088,7 +2145,7 @@ async function pushToServer(fl,d,data){
   // Stamp local save time so fetchDayFromServer can compare freshness
   if(!data._savedAt) data._savedAt = Date.now();
   // Always keep localStorage in sync with the stamped data
-  try{ localStorage.setItem(skey(fl,d), JSON.stringify(data)); }catch(_){}
+  try{ _dprLsSet(skey(fl,d), JSON.stringify(data)); }catch(_){}
   if(!serverUrl){ _dprPendingSaves.set(fl+'|'+d,{fl,d,data}); _dprScheduleRetry(); return; }
   setSyncBadge('syncing');
   const ok=await _dprPushRaw(fl,d,data);
@@ -2114,18 +2171,18 @@ async function fetchDayFromServer(fl, d){
     const j=await r.json();
     if(j.data){
       if(j.rev!==undefined && j.rev!==null){   // v59A: revision rule (see syncFromServer)
-        const localRaw = localStorage.getItem(skey(fl,d));
+        const localRaw = _dprLsGet(skey(fl,d));
         let localRev = null; try{ localRev = localRaw ? JSON.parse(localRaw)._rev : null; }catch(_){}
         if(localRev!==Number(j.rev) || !_dprLoadBase(fl,d)) return _dprAcceptServer(fl,d,j.data,j.rev,j.savedAt,{noDom:true}).data;
         return localRaw ? JSON.parse(localRaw) : null;
       }
       // Only overwrite local data if server's savedAt is newer than our local savedAt
       const serverSavedAt = j.savedAt ? new Date(j.savedAt).getTime() : 0;
-      const localRaw = localStorage.getItem(skey(fl,d));
+      const localRaw = _dprLsGet(skey(fl,d));
       const localSavedAt = localRaw ? (JSON.parse(localRaw)._savedAt || 0) : 0;
       if(serverSavedAt > localSavedAt + 5000){
         j.data._savedAt = serverSavedAt;
-        localStorage.setItem(skey(fl,d), JSON.stringify(j.data));
+        _dprLsSet(skey(fl,d), JSON.stringify(j.data));
         return j.data;
       }
       return localRaw ? JSON.parse(localRaw) : null;
@@ -2174,7 +2231,7 @@ async function syncDateRangeFromServer(floors, fromDate, toDate) {
   for (const {fl, dates} of lists) {
     for (const d of dates) {
       if (d < fromDate || d > toDate) continue;
-      if (localStorage.getItem(skey(fl, d))) continue;
+      if (_dprLsGet(skey(fl, d))) continue;
       targets.push({fl, d});
     }
   }
@@ -2763,8 +2820,25 @@ function _safeRenderAll(){
   }
   renderShifts();renderRemarks();renderResort();renderDayKpis();
 }
+// v59T: say why a day is empty — the server could not be reached, or the browser cache is full
+function _dprLoadBanner(){
+  const el = document.getElementById('dprLoadBanner'); if(!el) return;
+  const fl = curFloor, d = getDate(), key = fl+'|'+d;
+  const have = !!_dprLsGet(skey(fl,d));
+  const err = _dprSyncErr[key];
+  const parts = [];
+  if(!have && !err && _dprLoading[key]){ el.style.display='block'; el.innerHTML='<div style="margin:8px 0;padding:8px 12px;border:1px solid #bbb;border-left:5px solid #888;border-radius:6px;background:#f4f4f4;color:#555;font-size:12px">Loading '+d.split('-').reverse().join('/')+' from the server&hellip;</div>'; return; }
+  if(err && !have) parts.push('<b>Could not load '+d.split('-').reverse().join('/')+' for this floor from the server</b> ('+err+'). Nothing is lost — the day is on the server; it retries every 30 s. <a href="javascript:void(0)" onclick="_dprRetryLoad()">Retry now</a>');
+  else if(err) parts.push('Showing this device\'s copy of '+d.split('-').reverse().join('/')+' — the server could not be reached ('+err+'); it retries every 30 s.');
+  if(_dprStorageFull) parts.push('This browser\'s local cache is full ('+_dprStorageNote+'). Entries still save to the server and show from memory; the cache has been pruned — if this stays, clear the site data for app.sunloc.co.in once.');
+  if(!parts.length){ el.style.display='none'; el.innerHTML=''; return; }
+  el.style.display='block';
+  el.innerHTML = '<div style="margin:8px 0;padding:8px 12px;border:1px solid '+(err&&!have?'#c0392b':'#b8860b')+';border-left:5px solid '+(err&&!have?'#c0392b':'#b8860b')+';border-radius:6px;background:'+(err&&!have?'#fdecea':'#fff8e1')+';color:'+(err&&!have?'#c0392b':'#7a5c00')+';font-size:12px;line-height:1.5">'+parts.join('<br>')+'</div>';
+}
+async function _dprRetryLoad(){ const fl=curFloor, d=getDate(); _dprLastSaveTime = 0; await syncFromServer(fl,d); if(!unsaved) renderEntry(); }
 function renderEntry(){
   const _f=_saveFocus();
+  _dprLoadBanner();
   renderDayKpis();
   renderShifts();
   renderDTTable();
@@ -3199,7 +3273,7 @@ function addRun(sh, mcId){
   const m=migrateMachineData(data.shifts[sh].machines[mcId]||blankMachine());
   m.runs.push(blankRun());
   data.shifts[sh].machines[mcId]=m;
-  localStorage.setItem(skey(fl,d),JSON.stringify(data));
+  _dprLsSet(skey(fl,d),JSON.stringify(data));
   pushToServer(fl,d,data);
   markUnsaved();
 
@@ -3245,7 +3319,7 @@ function removeRun(sh, mcId, ri){
   if(m.runs.length<=1){ toast('At least one run required','var(--amber)'); return; }
   m.runs.splice(ri,1);
   data.shifts[sh].machines[mcId]=m;
-  localStorage.setItem(skey(fl,d),JSON.stringify(data));
+  _dprLsSet(skey(fl,d),JSON.stringify(data));
   pushToServer(fl,d,data);
   markUnsaved();
   renderShifts();
@@ -3320,7 +3394,7 @@ function onRunOrderChange(sh, mcId, ri){
   // Auto-save to server immediately — order selection persists permanently:
   // page refresh, browser history clear, new device, any browser
   const _fl=curFloor, _d=getDate(), _data=collectForm();
-  localStorage.setItem(skey(_fl,_d), JSON.stringify(_data));
+  _dprLsSet(skey(_fl,_d), JSON.stringify(_data));
   pushToServer(_fl,_d,_data);
 }
 
@@ -3351,10 +3425,10 @@ function updateMcTotals(sh, mcId){
     const gross = ord.grossQty || ord.qty;
     // Sum all saved production for this order across all floors/dates from localStorage
     let cumProd = 0;
-    Object.keys(localStorage).forEach(k => {
+    _dprLsKeys().forEach(k => {
       if (!k.startsWith('dpr3_')) return;
       try {
-        const d = JSON.parse(localStorage.getItem(k));
+        const d = JSON.parse(_dprLsGet(k));
         SHIFTS.forEach(s => {
           const m = d.shifts?.[s]?.machines?.[mcId];
           if (m) {
@@ -3581,7 +3655,7 @@ function saveRemarkEdit(i){
   const el=document.getElementById(`rem-edit-${i}`);
   if(!el||!day.remarks[i]) return;
   day.remarks[i].text=el.value;
-  localStorage.setItem(skey(fl,d),JSON.stringify(day));
+  _dprLsSet(skey(fl,d),JSON.stringify(day));
   pushToServer(fl,d,day);
   markUnsaved();
 }
@@ -3589,7 +3663,7 @@ function saveRemarkMc(i,val){
   const fl=curFloor,d=getDate(),day=loadDay(fl,d);
   if(!day.remarks[i]) return;
   day.remarks[i].mc=val;
-  localStorage.setItem(skey(fl,d),JSON.stringify(day));
+  _dprLsSet(skey(fl,d),JSON.stringify(day));
   pushToServer(fl,d,day);
   markUnsaved();
 }
@@ -3597,7 +3671,7 @@ function saveRemarkShift(i,val){
   const fl=curFloor,d=getDate(),day=loadDay(fl,d);
   if(!day.remarks[i]) return;
   day.remarks[i].shift=val;
-  localStorage.setItem(skey(fl,d),JSON.stringify(day));
+  _dprLsSet(skey(fl,d),JSON.stringify(day));
   pushToServer(fl,d,day);
   renderRemarks();
   markUnsaved();
@@ -3614,7 +3688,7 @@ function addRemark(){
       const fl=curFloor,d=getDate(),day=loadDay(fl,d);
       const mc=v('rem-mc')||'';
       day.remarks.push({shift:v('rem-shift'),mc,text:v('rem-text'),ts:new Date().toISOString()});
-      localStorage.setItem(skey(fl,d),JSON.stringify(day));
+      _dprLsSet(skey(fl,d),JSON.stringify(day));
       pushToServer(fl,d,day);
       closeModal();renderRemarks();markUnsaved();
 /* scrollIntoView removed */
@@ -3626,7 +3700,7 @@ function addRemark(){
 function deleteRemark(i){
   const fl=curFloor,d=getDate(),day=loadDay(fl,d);
   day.remarks.splice(i,1);
-  localStorage.setItem(skey(fl,d),JSON.stringify(day));
+  _dprLsSet(skey(fl,d),JSON.stringify(day));
   pushToServer(fl,d,day);
   renderRemarks();
 }
@@ -3670,7 +3744,7 @@ function saveResortEdit(i){
   const el=document.getElementById(`rs-edit-note-${i}`);
   if(!el||!day.resort[i]) return;
   day.resort[i].note=el.value;
-  localStorage.setItem(skey(fl,d),JSON.stringify(day));
+  _dprLsSet(skey(fl,d),JSON.stringify(day));
   pushToServer(fl,d,day);
   markUnsaved();
 }
@@ -3681,7 +3755,7 @@ function saveResortQty(i){
   const val=parseFloat(el.value||0);
   if(isNaN(val)||val<0) return;
   day.resort[i].qty=val;
-  localStorage.setItem(skey(fl,d),JSON.stringify(day));
+  _dprLsSet(skey(fl,d),JSON.stringify(day));
   pushToServer(fl,d,day);
   renderDayKpis();
   renderShifts();
@@ -3691,7 +3765,7 @@ function saveResortMc(i,val){
   const fl=curFloor,d=getDate(),day=loadDay(fl,d);
   if(!day.resort[i]) return;
   day.resort[i].mc=val;
-  localStorage.setItem(skey(fl,d),JSON.stringify(day));
+  _dprLsSet(skey(fl,d),JSON.stringify(day));
   pushToServer(fl,d,day);
   renderDayKpis();
   renderShifts();
@@ -3701,7 +3775,7 @@ function saveResortShift(i,val){
   const fl=curFloor,d=getDate(),day=loadDay(fl,d);
   if(!day.resort[i]) return;
   day.resort[i].shift=val;
-  localStorage.setItem(skey(fl,d),JSON.stringify(day));
+  _dprLsSet(skey(fl,d),JSON.stringify(day));
   pushToServer(fl,d,day);
   renderResort();
   renderDayKpis();
@@ -3723,7 +3797,7 @@ function addResort(){
       const fl=curFloor,d=getDate(),day=loadDay(fl,d);
       if(!v('rs-qty')){toast('Enter quantity','var(--red)');return;}
       day.resort.push({mc:v('rs-mc'),shift:v('rs-shift'),reason:v('rs-reason'),qty:parseFloat(v('rs-qty')),note:v('rs-note'),ts:new Date().toISOString()});
-      localStorage.setItem(skey(fl,d),JSON.stringify(day));
+      _dprLsSet(skey(fl,d),JSON.stringify(day));
       pushToServer(fl,d,day);
       closeModal();renderResort();renderDayKpis();renderShifts();markUnsaved();
       // Scroll to bottom so new re-sort entry is visible
@@ -3735,7 +3809,7 @@ function addResort(){
 function deleteResort(i){
   const fl=curFloor,d=getDate(),day=loadDay(fl,d);
   day.resort.splice(i,1);
-  localStorage.setItem(skey(fl,d),JSON.stringify(day));
+  _dprLsSet(skey(fl,d),JSON.stringify(day));
   pushToServer(fl,d,day);
   renderResort();renderDayKpis();renderShifts();
 }
@@ -3798,7 +3872,7 @@ function getDprDateRange(fl, mode) {
   const floors = fl === 'ALL' ? Object.keys(FLOORS) : [fl];
   const dates = new Set();
   floors.forEach(f => {
-    Object.keys(localStorage)
+    _dprLsKeys()
       .filter(k => k.startsWith(`dpr3_${f}_`))
       .map(k => k.split('_')[2])
       .filter(d => d && d >= fromDate && d <= t)
@@ -4136,7 +4210,7 @@ async function renderAIM(){
 
   let datesToSum = [d];
   if (dateMode === 'month') {
-    datesToSum = Object.keys(localStorage)
+    datesToSum = _dprLsKeys()
       .filter(k => k.startsWith(`dpr3_${fl}_${_dprSelectedMonth}`))
       .map(k => k.split('_')[2]).filter(Boolean).sort();
     if (!datesToSum.length) datesToSum = [d];
@@ -4242,7 +4316,7 @@ function renderShiftPersonnelPerf(){
   // Aggregate stats per role per person across all saved days
   const personStats = {}; // { name: { role, dtMins:0, dtShifts:0, aimBoxes:0, shiftsWorked:0 } }
 
-  const allKeys = Object.keys(localStorage).filter(k=>k.startsWith('dpr3_'));
+  const allKeys = _dprLsKeys().filter(k=>k.startsWith('dpr3_'));
   allKeys.forEach(k=>{
     const parts=k.split('_');
     if(parts[1]!==fl) return;
@@ -4675,7 +4749,7 @@ function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap, serverCum
     const flDates = (allDatesMap[fl] || []).filter(_scopeFilter);
     const flMachines = FLOORS[fl].machines || [];
     flDates.forEach(d => {
-      const cached = localStorage.getItem(skey(fl, d));
+      const cached = _dprLsGet(skey(fl, d));
       if (!cached) return;
       try {
         const dd = JSON.parse(cached);
@@ -4825,7 +4899,7 @@ function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap, serverCum
 
 // Legacy helper kept for Trends/History which still use localStorage only
 function getPlantReportData(selectedDate) {
-  const allKeys  = Object.keys(localStorage).filter(k => k.startsWith('dpr3_'));
+  const allKeys  = _dprLsKeys().filter(k => k.startsWith('dpr3_'));
   const allDates = [...new Set(allKeys.map(k => k.split('_')[2]).filter(d => d && d <= selectedDate))].sort();
 
   const floorDataMap = {};
@@ -4833,7 +4907,7 @@ function getPlantReportData(selectedDate) {
 
   const allDatesMap = {};
   Object.keys(FLOORS).forEach(fl => {
-    allDatesMap[fl] = allDates.filter(d => localStorage.getItem(skey(fl, d)));
+    allDatesMap[fl] = allDates.filter(d => _dprLsGet(skey(fl, d)));
   });
 
   const { rows, totals } = buildPlantReportRows(selectedDate, floorDataMap, allDatesMap);
@@ -4941,7 +5015,7 @@ async function renderPlantReport(){
   const allDatesMap = {};
   Object.keys(FLOORS).forEach(fl => {
     allDatesMap[fl] = [...new Set(
-      Object.keys(localStorage)
+      _dprLsKeys()
         .filter(k => k.startsWith(`dpr3_${fl}_`))
         .map(k => k.split('_')[2])
         .filter(d => d && d <= selectedDate)
@@ -5100,7 +5174,7 @@ async function exportPlantReport(){
   Object.keys(FLOORS).forEach(fl => { if(floorDataMap[fl]===undefined) floorDataMap[fl]=loadDay(fl,selectedDate); });
   const allDatesMap = {};
   Object.keys(FLOORS).forEach(fl => {
-    allDatesMap[fl] = [...new Set(Object.keys(localStorage).filter(k=>k.startsWith(`dpr3_${fl}_`)).map(k=>k.split('_')[2]).filter(d=>d&&d<=selectedDate))].sort();
+    allDatesMap[fl] = [...new Set(_dprLsKeys().filter(k=>k.startsWith(`dpr3_${fl}_`)).map(k=>k.split('_')[2]).filter(d=>d&&d<=selectedDate))].sort();
   });
 
   // v45X: same server cumulative as renderPlantReport — the Excel export must match the display.
@@ -5169,7 +5243,7 @@ async function exportPlantReport(){
 }
 
 function renderHistory(){
-  const allKeys=Object.keys(localStorage).filter(k=>k.startsWith('dpr3_'));
+  const allKeys=_dprLsKeys().filter(k=>k.startsWith('dpr3_'));
   const entries=allKeys.map(k=>{
     const parts=k.split('_');
     return{key:k,floor:parts[1],date:parts[2]};
@@ -5623,7 +5697,7 @@ function refreshRecentDates(){
   const fl=curFloor;
   // Collect dates from localStorage
   const localDates=[...new Set(
-    Object.keys(localStorage)
+    _dprLsKeys()
       .filter(k=>k.startsWith(`dpr3_${fl}_`))
       .map(k=>k.split('_')[2])
       .filter(Boolean)
@@ -5683,7 +5757,7 @@ function closeModal(){ document.getElementById('modal-overlay').classList.remove
 // ═══════════════════════════════════════════════════════
 function exportData(){
   const data={};
-  Object.keys(localStorage).filter(k=>k.startsWith('dpr3_')||k==='dpr_targets').forEach(k=>data[k]=localStorage.getItem(k));
+  _dprLsKeys().filter(k=>k.startsWith('dpr3_')||k==='dpr_targets').forEach(k=>data[k]=_dprLsGet(k));
   const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`DPR_backup_${today()}.json`;a.click();
   toast('Exported!','var(--green)');
@@ -5700,11 +5774,11 @@ function importData(input){
       // Push all DPR records to server
       if(serverUrl){
         const records = [];
-        Object.keys(localStorage).filter(k=>k.startsWith('dpr3_') && k.match(/\d{4}-\d{2}-\d{2}$/)).forEach(k=>{
+        _dprLsKeys().filter(k=>k.startsWith('dpr3_') && k.match(/\d{4}-\d{2}-\d{2}$/)).forEach(k=>{
           try {
             const date = k.slice(-10);
             const floor = k.slice(5, -11);
-            const data = JSON.parse(localStorage.getItem(k));
+            const data = JSON.parse(_dprLsGet(k));
             if(data) records.push({floor, date, data});
           } catch(e){}
         });
@@ -5734,7 +5808,7 @@ function importData(input){
 function clearAll(){
   if(!confirm('Clear ALL DPR data? This cannot be undone.'))return;
   if(!confirm('Are you absolutely sure?'))return;
-  Object.keys(localStorage).filter(k=>k.startsWith('dpr3_')).forEach(k=>localStorage.removeItem(k));
+  _dprLsKeys().filter(k=>k.startsWith('dpr3_')).forEach(k=>_dprLsRemove(k));
   toast('All data cleared','var(--amber)');
   renderEntry();
 }
@@ -5787,7 +5861,7 @@ setTimeout(()=>onDateChange&&onDateChange(),200);
 function collectAllManpower(){
   try{
     const mp={};
-    const keys=Object.keys(localStorage).filter(k=>k&&k.startsWith('dpr_manpower_'));
+    const keys=_dprLsKeys().filter(k=>k&&k.startsWith('dpr_manpower_'));
     keys.forEach(k=>{ try{ mp[k.replace('dpr_manpower_','')]=JSON.parse(localStorage.getItem(k)||'[]'); }catch{} });
     return mp;
   }catch{ return {}; }
