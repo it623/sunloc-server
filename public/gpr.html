@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v59W</title>
+<title>GPR · build v59X</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -421,8 +421,8 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v59W</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v59W</div>
+    <h1>GPR<span class="vpill">v59X</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v59X</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -442,7 +442,7 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v59W</span></div>
+  <div class="nbrand">GPR<span class="vpill">v59X</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <span style="display:inline-flex;align-items:center;gap:5px;margin-right:10px;padding:2px 6px;border:1px solid #3949ab;border-radius:6px;background:#232b6e" title="Production month — the month turns at 06:00 IST on the 1st (same rule as DPR, Tracking and Planning). Every list, picker and period view is scoped to this month's batch cohort; stock balances and pending receipts always show the live position.">
@@ -1056,9 +1056,11 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
       </div>
 
       <div id="yieldIssuePane" style="display:none">
-        <div class="card-sub" style="margin-bottom:8px">Gelatine to issue for the <b>next production day</b>, floor-wise, on three bases: yesterday, the last 7 days and the month to date. Packable production = machine-wise DPR lakhs × the batch's packable share (packed + WIP × A-grade, over gross) × the batch's label weight &mdash; the same working as Daily by floor; gelatine to issue = packable kg per day &divide; the planning yield.</div>
+        <div class="card-sub" style="margin-bottom:8px">Gelatine to issue for the <b>next production day</b>, floor-wise, on three bases: yesterday, the last 7 days and the month to date. Packable production = machine-wise DPR lakhs × the batch's packable share (packed + WIP × A-grade, over gross) × the batch's label weight &mdash; the same working as Daily by floor; gelatine to issue = packable kg per day &divide; the planning yield. <b>Split (v59X):</b> the issue is virgin + reuse (cutting / salvage / return solution). Reuse generated in the window must be consumed back; if generation ran ahead of consumption, the gap &mdash; plus any extra daily consumption target × days &mdash; is taken off virgin once, on the next day or spread equally over the chosen number of days.</div>
         <div class="fgrid" style="margin-bottom:10px">
           <div class="field-grp"><label>Planning yield %</label><input id="mi_yield" type="number" step="0.5" value="105" onchange="loadMaterialIssuance()"></div>
+          <div class="field-grp"><label>Extra reuse target kg/day <span class="hint" style="display:inline">(above generation)</span></label><input id="mi_extra" type="number" step="5" min="0" value="0" onchange="loadMaterialIssuance()"></div>
+          <div class="field-grp"><label>Take the reduction</label><select id="mi_spread" onchange="loadMaterialIssuance()"><option value="1">All on the next day</option><option value="2">Spread over 2 days</option><option value="3">Spread over 3 days</option><option value="5">Spread over 5 days</option><option value="7">Spread over 7 days</option><option value="10">Spread over 10 days</option></select></div>
           <div class="field-grp"><label>&nbsp;</label><button class="btn primary" onclick="loadMaterialIssuance()">Recompute</button></div>
           <div class="field-grp"><label>&nbsp;</label><button class="btn teal" onclick="exportMaterialIssuance()">Export</button></div>
         </div>
@@ -6200,37 +6202,54 @@ async function loadMaterialIssuance(){
   out.innerHTML = '<div class="empty">Computing from the daily packable production&hellip;</div>';
   try{
     const y = num('mi_yield') || 105;
-    const d = await api('/api/gpr/material-issuance?yield='+encodeURIComponent(y));
+    const extra = Math.max(0, num('mi_extra') || 0), spread = Math.max(1, parseInt(val('mi_spread')||'1',10) || 1);   // v59X
+    const d = await api('/api/gpr/material-issuance?yield='+encodeURIComponent(y)+'&extra='+encodeURIComponent(extra)+'&spread='+encodeURIComponent(spread));
     if(!d || !d.ok){ out.innerHTML = '<div class="empty">'+esc((d&&d.error)||'Could not compute')+'</div>'; return; }
     window._MI = d;
     const W = d.windows, K = [['yesterday','Yesterday'],['last7','Last 7 days'],['month','Month to date']];
     const fl = (typeof visibleFloors==='function') ? visibleFloors() : ['GF','1F','2F'];
     const floors = ['GF','1F','2F'].filter(f=>fl.includes(f));
-    const rowOf = (k, f) => ((W[k]||{}).rows||[]).find(r=>r.floor===f) || { packableKg:0, packableLakhs:0, days:0, batches:0, packablePerDayKg:0, issueKg:0 };
+    const Z = { packableKg:0, packableLakhs:0, days:0, batches:0, packablePerDayKg:0, issueKg:0, generatedKg:0, generatedCutSalKg:0, generatedReturnKg:0, consumedKg:0, consumedCutSalKg:0, consumedReturnKg:0, extraTargetKg:0, shortfallKg:0, surplusKg:0, reusePerDayKg:0, cutSalPerDayKg:0, returnPerDayKg:0, reductionPerDayKg:0, virginPerDayKg:0 };
+    const rowOf = (k, f) => ((W[k]||{}).rows||[]).find(r=>r.floor===f) || Z;
+    const S = (k, key) => floors.reduce((a,f)=>a+(rowOf(k,f)[key]||0),0);
+    const spreadTxt = d.spreadDays>1 ? 'over the next '+d.spreadDays+' days' : 'on the next day';
     let h = '<div class="kgrid">'
-      + K.map(([k,l])=>{ const t = floors.reduce((a,f)=>a+rowOf(k,f).issueKg,0); return kpi('Issue tomorrow — '+l+' basis', fmt(t,0)+' kg', k==='last7'?'amber':'', _dm(W[k].from)+(W[k].from!==W[k].to?' → '+_dm(W[k].to):'')); }).join('')
+      + K.map(([k,l])=>{ const t = S(k,'issueKg'), v = S(k,'virginPerDayKg'), ru = S(k,'reusePerDayKg'), rd = S(k,'reductionPerDayKg');
+          return kpi('Issue tomorrow — '+l+' basis', fmt(t,0)+' kg', k==='last7'?'amber':'', 'virgin <b>'+fmt(v,0)+'</b> · reuse '+fmt(ru,0)+(rd>0?' · stock reduction '+fmt(rd,0):'')+' kg'); }).join('')
       + '</div>';
+    // v59X: per window — Gelatine to issue · Reuse (cutting/salvage · return solution) · Stock reduction · Virgin
     h += '<div class="tswrap" style="max-height:none"><table class="gtable"><thead><tr><th rowspan="2">Floor</th>'
-      + K.map(([k,l])=>'<th colspan="4" style="text-align:center;border-left:2px solid var(--b2)">'+esc(l)+' <span style="font-weight:400;color:var(--t3)">'+esc(_dm(W[k].from))+(W[k].from!==W[k].to?' → '+esc(_dm(W[k].to)):'')+'</span></th>').join('')
-      + '</tr><tr>' + K.map(()=>'<th class="num" style="border-left:2px solid var(--b2)">Packable L</th><th class="num">Packable kg</th><th class="num" title="packable kg ÷ production days in the window">kg / day</th><th class="num" title="kg per day ÷ planning yield">Gelatine to issue kg</th>').join('')
+      + K.map(([k,l])=>'<th colspan="6" style="text-align:center;border-left:2px solid var(--b2)">'+esc(l)+' <span style="font-weight:400;color:var(--t3)">'+esc(_dm(W[k].from))+(W[k].from!==W[k].to?' → '+esc(_dm(W[k].to)):'')+'</span></th>').join('')
+      + '</tr><tr>' + K.map(()=>'<th class="num" style="border-left:2px solid var(--b2)" title="packable kg ÷ production days in the window">Packable kg/day</th><th class="num" title="packable kg per day ÷ planning yield — virgin + reuse">Gelatine to issue</th><th class="num" title="cutting + salvage generated in the window ÷ days — must be consumed back daily">Reuse: cutting / salvage</th><th class="num" title="return solution recovered in the window ÷ days">Reuse: return soln</th><th class="num" title="(generated + extra target × days − consumed) ÷ spread days — one-time, taken off virgin">Stock reduction</th><th class="num" title="gelatine to issue − reuse − stock reduction">Virgin</th>').join('')
       + '</tr></thead><tbody>';
+    const cell = (r, bold) => '<td class="num" style="border-left:2px solid var(--b2)">'+fmt(r.packablePerDayKg,0)+' <span style="color:var(--t3);font-size:10px">'+r.days+'d · '+r.batches+' b</span></td><td class="num"><b>'+fmt(r.issueKg,0)+'</b></td><td class="num">'+fmt(r.cutSalPerDayKg,0)+'</td><td class="num">'+fmt(r.returnPerDayKg,0)+'</td><td class="num" style="color:'+(r.reductionPerDayKg>0?'var(--amber)':'var(--t3)')+'">'+(r.reductionPerDayKg>0?'−'+fmt(r.reductionPerDayKg,0):'—')+'</td><td class="num" style="color:var(--teal)"><b>'+fmt(r.virginPerDayKg,0)+'</b></td>';
     floors.forEach(f=>{
-      h += '<tr><td><b>'+esc(FLOOR_LABELS[f]||f)+'</b></td>' + K.map(([k])=>{ const r = rowOf(k,f);
-        return '<td class="num" style="border-left:2px solid var(--b2)">'+fmt(r.packableLakhs,2)+'</td><td class="num">'+fmt(r.packableKg,0)+' <span style="color:var(--t3);font-size:10px">'+r.days+'d · '+r.batches+' b</span></td><td class="num">'+fmt(r.packablePerDayKg,0)+'</td><td class="num"><b>'+fmt(r.issueKg,0)+'</b></td>'; }).join('') + '</tr>';
+      h += '<tr><td><b>'+esc(FLOOR_LABELS[f]||f)+'</b></td>' + K.map(([k])=>cell(rowOf(k,f))).join('') + '</tr>';
     });
-    h += '<tr style="background:var(--s3);font-weight:700"><td>TOTAL — gelatine to issue for the day</td>' + K.map(([k])=>{ const t = floors.reduce((a,f)=>a+rowOf(k,f).issueKg,0), p = floors.reduce((a,f)=>a+rowOf(k,f).packablePerDayKg,0), L = floors.reduce((a,f)=>a+rowOf(k,f).packableLakhs,0), kg = floors.reduce((a,f)=>a+rowOf(k,f).packableKg,0);
-      return '<td class="num" style="border-left:2px solid var(--b2)">'+fmt(L,2)+'</td><td class="num">'+fmt(kg,0)+'</td><td class="num">'+fmt(p,0)+'</td><td class="num"><b>'+fmt(t,0)+'</b></td>'; }).join('') + '</tr>';
+    h += '<tr style="background:var(--s3);font-weight:700"><td>TOTAL — for the day</td>' + K.map(([k])=>cell({ packablePerDayKg:S(k,'packablePerDayKg'), days:'Σ', batches:S(k,'batches'), issueKg:S(k,'issueKg'), cutSalPerDayKg:S(k,'cutSalPerDayKg'), returnPerDayKg:S(k,'returnPerDayKg'), reductionPerDayKg:S(k,'reductionPerDayKg'), virginPerDayKg:S(k,'virginPerDayKg') })).join('') + '</tr>';
     h += '</tbody></table></div>';
-    h += '<div class="hint" style="margin-top:8px">For production day <b>'+esc(_dm(d.forDay))+'</b>; basis ends '+esc(_dm(d.basisEndsOn))+' (the last completed production day). Gelatine to issue = packable kg per day &divide; '+d.planYieldPct+'% — virgin plus reuse, before the cutting/salvage that will come back. A floor with no production in a window shows 0.</div>';
+    // v59X: the reuse balance behind the stock-reduction column, per window
+    h += '<div class="tswrap" style="max-height:none;margin-top:10px"><table class="gtable"><thead><tr><th>Reuse balance in the window</th>' + K.map(([k,l])=>'<th class="num" style="border-left:2px solid var(--b2)">'+esc(l)+'</th>').join('') + '</tr></thead><tbody>'
+      + '<tr><td>Generated — cutting / salvage (printing + PI) kg</td>' + K.map(([k])=>'<td class="num" style="border-left:2px solid var(--b2)">'+fmt(S(k,'generatedCutSalKg'),0)+'</td>').join('') + '</tr>'
+      + '<tr><td>Generated — return solution recovered kg</td>' + K.map(([k])=>'<td class="num" style="border-left:2px solid var(--b2)">'+fmt(S(k,'generatedReturnKg'),0)+'</td>').join('') + '</tr>'
+      + '<tr><td>Consumed back — cutting / salvage into tanks kg</td>' + K.map(([k])=>'<td class="num" style="border-left:2px solid var(--b2)">'+fmt(S(k,'consumedCutSalKg'),0)+'</td>').join('') + '</tr>'
+      + '<tr><td>Consumed back — return solution into tanks kg</td>' + K.map(([k])=>'<td class="num" style="border-left:2px solid var(--b2)">'+fmt(S(k,'consumedReturnKg'),0)+'</td>').join('') + '</tr>'
+      + '<tr><td>Extra consumption target ('+fmt(d.extraKgPerDay,0)+' kg/day × production days)</td>' + K.map(([k])=>'<td class="num" style="border-left:2px solid var(--b2)">'+fmt(S(k,'extraTargetKg'),0)+'</td>').join('') + '</tr>'
+      + '<tr style="background:var(--s3);font-weight:700"><td>Stock to work off = generated + target − consumed</td>' + K.map(([k])=>{ const sf = S(k,'shortfallKg'), su = S(k,'surplusKg'); return '<td class="num" style="border-left:2px solid var(--b2);color:'+(sf>0?'var(--amber)':'var(--green)')+'">'+(sf>0?fmt(sf,0)+' kg → −'+fmt(S(k,'reductionPerDayKg'),0)+' kg/day '+esc(spreadTxt):(su>0?'consumed '+fmt(su,0)+' kg ahead':'balanced'))+'</td>'; }).join('') + '</tr>'
+      + '</tbody></table></div>';
+    h += '<div class="hint" style="margin-top:8px">For production day <b>'+esc(_dm(d.forDay))+'</b>; basis ends '+esc(_dm(d.basisEndsOn))+' (the last completed production day). Gelatine to issue = packable kg per day &divide; '+d.planYieldPct+'% = virgin + reuse. Reuse per day = what the window generated &divide; its production days (it must be consumed back). Stock reduction = (generated + '+fmt(d.extraKgPerDay,0)+' kg/day × days − consumed) &divide; '+d.spreadDays+' — a one-time cut to virgin taken '+esc(spreadTxt)+'; it reads 0 once the backlog is consumed. Virgin = issue − reuse − stock reduction (never below 0). Generation counts accepted and pending cutting / salvage and recovered return solution; expected WIP salvage is not counted until it is actually generated. A floor with no production in a window shows 0.</div>';
     out.innerHTML = h;
   }catch(e){ out.innerHTML = '<div class="empty">Could not compute the issuance.</div>'; }
 }
 function exportMaterialIssuance(){
   const d = window._MI; if(!d){ toast('Compute first','err'); return; }
   const rows = []; Object.entries(d.windows).forEach(([k,w])=>(w.rows||[]).forEach(r=>rows.push(Object.assign({ basis:k, from:w.from, to:w.to, floor_label: FLOOR_LABELS[r.floor]||r.floor }, r))));
-  gprExport({ rows, title:'GPR — material issuance (gelatine to issue, floor-wise)', context:'for '+_dm(d.forDay)+' · basis to '+_dm(d.basisEndsOn)+' · planning yield '+d.planYieldPct+'%', sheet:'Issuance', file:'gpr_material_issuance',
+  gprExport({ rows, title:'GPR — material issuance (gelatine to issue, floor-wise)', context:'for '+_dm(d.forDay)+' · basis to '+_dm(d.basisEndsOn)+' · planning yield '+d.planYieldPct+'% · extra reuse target '+(d.extraKgPerDay||0)+' kg/day · reduction over '+(d.spreadDays||1)+' day(s)', sheet:'Issuance', file:'gpr_material_issuance',
     columns:[ {key:'basis',label:'Basis',w:12},{key:'from',label:'From',w:12},{key:'to',label:'To',w:12},{key:'floor_label',label:'Floor',w:12},{key:'packableLakhs',label:'Packable L',w:12,num:true},{key:'packableKg',label:'Packable kg',w:12,num:true},
-      {key:'days',label:'Days',w:7,num:true},{key:'batches',label:'Batches',w:9,num:true},{key:'packablePerDayKg',label:'kg / day',w:10,num:true},{key:'issueKg',label:'Gelatine to issue kg',w:18,num:true} ] });
+      {key:'days',label:'Days',w:7,num:true},{key:'batches',label:'Batches',w:9,num:true},{key:'packablePerDayKg',label:'kg / day',w:10,num:true},{key:'issueKg',label:'Gelatine to issue kg',w:18,num:true},
+      {key:'cutSalPerDayKg',label:'Reuse cutting/salvage kg/day',w:16,num:true},{key:'returnPerDayKg',label:'Reuse return soln kg/day',w:16,num:true},{key:'reductionPerDayKg',label:'Stock reduction kg/day',w:16,num:true},{key:'virginPerDayKg',label:'Virgin kg/day',w:14,num:true},
+      {key:'generatedCutSalKg',label:'Generated cutting/salvage kg',w:16,num:true},{key:'generatedReturnKg',label:'Generated return soln kg',w:16,num:true},{key:'consumedCutSalKg',label:'Consumed cutting/salvage kg',w:16,num:true},{key:'consumedReturnKg',label:'Consumed return soln kg',w:16,num:true},
+      {key:'extraTargetKg',label:'Extra target kg',w:12,num:true},{key:'shortfallKg',label:'Stock to work off kg',w:14,num:true},{key:'spreadDays',label:'Spread days',w:9,num:true} ] });
 }
 // ═══ v58H item 7: MATERIAL RECONCILIATION — by batch, one row = yield + planned vs actual ═══════
 async function loadMaterialRecon(){

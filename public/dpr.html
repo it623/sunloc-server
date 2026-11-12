@@ -499,7 +499,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v59W</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v59X</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -617,6 +617,9 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
         <option value="1F">First Floor (FF)</option>
         <option value="2F">Second Floor (SF)</option>
       </select>
+      <span style="font-family:var(--fc);font-size:10px;color:var(--t3);letter-spacing:1px;margin-left:8px">MACHINE</span>
+      <select id="analyticsMachine" onchange="renderAnalytics()" style="background:var(--s2);border:2px solid var(--b2);border-radius:4px;color:var(--t1);padding:5px 10px;font-size:12px;font-weight:700"><option value="">Whole floor</option></select>
+      <button class="btn-sm" onclick="exportAnalyticsXlsx()" style="margin-left:auto">⬇ Export</button>
       <span style="font-family:var(--fc);font-size:10px;color:var(--t3);letter-spacing:1px;margin-left:8px">DATE</span>
       <input type="date" id="analyticsDate" onchange="window._analyticsRangeMode='today';renderAnalytics()" style="background:var(--s2);border:2px solid var(--b2);border-radius:4px;color:var(--t1);padding:5px 10px;font-size:12px;font-weight:700">
       <button class="btn-sm" onclick="document.getElementById('analyticsDate').value=today();window._analyticsRangeMode='today';renderAnalytics()">Today</button>
@@ -641,6 +644,9 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
       <select id="trendFloor" onchange="renderTrends()" style="width:130px">
         <option value="ALL">All Floors</option><option value="GF">Ground Floor</option><option value="1F">First Floor</option><option value="2F">Second Floor</option>
       </select>
+      <span style="font-family:var(--fc);font-size:10px;color:var(--t3);letter-spacing:1px;margin-left:8px">MACHINE</span>
+      <select id="trendMachine" onchange="renderTrends()" style="width:150px"><option value="">Whole floor</option></select>
+      <button class="btn-sm" onclick="exportTrendsXlsx()" style="margin-left:auto">⬇ Export</button>
     </div>
     <div id="trends-range-bar"></div>
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px">
@@ -687,7 +693,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
     <div id="perf-range-bar"></div>
   </div>
   <div class="card"><div class="card-title">Shift Incharge Scorecard</div><div id="perfTable"></div></div>
-  <div class="card"><div class="card-title">Incharge vs Efficiency <span style="font-weight:400;color:var(--t3);font-size:11px">— avg shift efficiency per incharge (rolling 30d)</span></div><div class="chart-wrap-lg"><canvas id="ch-perf"></canvas></div></div>
+  <div class="card"><div class="card-title">Incharge vs Efficiency <span style="font-weight:400;color:var(--t3);font-size:11px">— avg shift efficiency per incharge (rolling 30d) · shifts on duty in brackets · green ≥ 90 % · amber ≥ 75 %</span></div><div class="chart-wrap-lg"><canvas id="ch-perf"></canvas></div></div>
   <div class="card"><div class="card-title">👤 Operator-wise Performance</div><div id="operatorPerfSection"><p style="color:var(--t3);font-size:12px">Loading...</p></div></div>
   <div class="card"><div class="card-title">🏭 Shift Personnel Performance</div><div id="shiftPersonnelSection"><p style="color:var(--t3);font-size:12px">Loading...</p></div></div>
 </div>
@@ -1822,7 +1828,11 @@ function calcShiftDT(fl,d,sh){
     DT_CATS.forEach(c=>{
       // Prefer live DT-table input (id: dt-sh-mc-cat), then shift DT summary input (id: dts-sh-cat)
       // These exist when the user is on the Data Entry page with that shift/floor/date loaded
-      const liveEl=document.getElementById(`dt-${sh}-${mc.id}-${c}`);
+      // v59X (Ishan, 11 Nov — personnel DT read 0 for everyone): the live DT inputs on the Data Entry page belong to
+      // the floor + date on screen only; they were being read for EVERY historical day (today's blank inputs → 0 for
+      // all 100+ shifts). Live inputs apply only when this call is for that same floor and date.
+      const _liveOk = (fl===curFloor && d===getDate());
+      const liveEl=_liveOk ? document.getElementById(`dt-${sh}-${mc.id}-${c}`) : null;
       const val=liveEl ? parseFloat(liveEl.value||0)
                        : parseFloat((migrateMachineData(day.shifts[sh].machines[mc.id]||blankMachine()))[c]||0);
       cats[c]+=val;
@@ -3954,7 +3964,9 @@ async function renderAnalytics(){
   // floor's active machines, tagging each with its source floor (_fl) so all reads (loadDay, tgt)
   // hit the correct floor. Previously this used getActiveMachines('ALL') → [] (no such floor),
   // so the all-floors view aggregated nothing real and fell back to stale partial localStorage.
-  const mcs = _aggFloors.flatMap(_f => getActiveMachines(_f).map(mc => ({ ...mc, _fl: _f })));
+  // v59X (Ishan, 11 Nov): once a floor is selected the user may narrow to one machine of that floor.
+  const _mcPick = _v59xMachineSelect('analyticsMachine', fl);
+  const mcs = _aggFloors.flatMap(_f => getActiveMachines(_f).map(mc => ({ ...mc, _fl: _f }))).filter(mc => !_mcPick || mc.id === _mcPick);
   const mcStats = {};
   mcs.forEach(mc => { mcStats[mc.id] = {prod:0, tgt:0, dt:0, resort:0, batches:0, dtCats:{}}; });
   DT_CATS.forEach(c=>mcs.forEach(mc=>mcStats[mc.id].dtCats[c]=0));
@@ -4084,6 +4096,7 @@ async function renderAnalytics(){
   },options:{...chartOpts(),plugins:{...chartOpts().plugins,legend:{display:false}}}});
 
   // Machine summary table
+  const _anRows = [];   // v59X: rows captured for exportAnalyticsXlsx()
   let html=`<div class="tbl-mobile-wrap"><table class="data-table"><thead><tr><th>Machine</th><th>Size</th><th>Batches Run</th><th>Target</th><th>Produced</th><th>Efficiency</th><th>DT (min)</th><th>Re-Sort</th></tr></thead><tbody>`;
   mcs.forEach(mc=>{
     let prod, dt, batchCount;
@@ -4102,6 +4115,8 @@ async function renderAnalytics(){
     const eff=t>0?(prod/t*100):0;
     const rs=isRange ? (aggResortByMc[mc.id]||0) : ((_dayByFloorToday[mc._fl]||_dayByFloorToday[fl]).resort||[]).filter(r=>r.mc===mc.id).reduce((s,r)=>s+parseFloat(r.qty||0),0);
     const effCls=eff>=90?'g':eff>=75?'a':'r';
+    { const _dc = {}; if (isRange) { DT_CATS.forEach(c=>_dc[c]=mcStats[mc.id].dtCats[c]||0); } else { DT_CATS.forEach(c=>_dc[c]=0); SHIFTS.forEach(sh=>{ const m=migrateMachineData((_dayByFloorToday[mc._fl]||_dayByFloorToday[fl]).shifts[sh].machines[mc.id]||blankMachine()); DT_CATS.forEach(c=>_dc[c]+=parseFloat(m[c]||0)); }); }
+      _anRows.push({ floor: mc._fl, mc: mc.id, sz: mc.sz, batches: batchCount, tgt: t, prod, eff, dt, dtCats: _dc, rs }); }
     html+=`<tr><td class="mono">${mc.id}</td><td style="color:var(--t3)">${mc.sz}</td>
       <td style="color:var(--t2)">${batchCount>1?`<span class="pill a">${batchCount} runs</span>`:'<span style="color:var(--t3)">'+(batchCount||0)+'</span>'}</td>
       <td class="mono">${t.toFixed?t.toFixed(2):t}</td><td class="mono">${prod>0?prod.toFixed(2):'—'}</td>
@@ -4138,6 +4153,90 @@ async function renderAnalytics(){
     <td class="mono">${totRs>0?`<span style="color:var(--red)">${totRs.toFixed(2)}</span>`:'—'}</td>
   </tr></tfoot></table></div>`;
   document.getElementById('mcSummaryTable').innerHTML=html;
+  window._anLast = { floor: fl, machine: _mcPick||'', rangeMode, date: d, isRange, elapsedDays, dates: isRange ? dates : [d], rows: _anRows, dtCats, dtPcts, resort: rsMap,
+                     totals: { batches: totBatches, tgt: totTarget, prod: totProd, eff: totEff, dt: totDT, rs: totRs } };
+}
+
+// v59X (Ishan, 11 Nov): machine dropdown shared by Analytics and Trends. Repopulated whenever the floor
+// changes (options = that floor's active machines, "Whole floor" first); hidden for All Floors. Returns the
+// selected machine id or '' for the whole floor.
+function _v59xMachineSelect(selId, fl){
+  const el = document.getElementById(selId); if(!el) return '';
+  if (fl === 'ALL') { el.value=''; el.style.display='none'; el.dataset.fl=''; return ''; }
+  el.style.display='';
+  if (el.dataset.fl !== fl) {
+    const prev = el.value;
+    el.innerHTML = '<option value="">Whole floor</option>' + getActiveMachines(fl).map(mc=>`<option value="${mc.id}">${mc.id} · ${mc.sz}</option>`).join('');
+    el.dataset.fl = fl;
+    el.value = getActiveMachines(fl).some(mc=>mc.id===prev) ? prev : '';
+  }
+  return el.value || '';
+}
+function _v59xRangeLabel(mode, dates){
+  const L = {today:'Today', month:'This Month', '30d':'Last 30 days', '90d':'Last 90 days', '180d':'Last 6 months', '365d':'Last 1 year'};
+  const span = dates && dates.length ? ` (${dates[0]} → ${dates[dates.length-1]}, ${dates.length} day${dates.length===1?'':'s'} with data)` : '';
+  return (L[mode]||mode) + span;
+}
+function _v59xFloorName(fl){ return fl==='ALL' ? 'All Floors' : ((FLOORS[fl]&&FLOORS[fl].label) || fl); }
+function _v59xSheetWithHeader(titleLines, header, rows, totalsRow, widths){
+  const aoa = titleLines.map(t=>[t]).concat([[]], [header], rows); if (totalsRow) aoa.push(totalsRow);
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = widths.map(w=>({wch:w}));
+  ws['!merges'] = titleLines.map((_,i)=>({s:{r:i,c:0},e:{r:i,c:Math.max(0,header.length-1)}}));
+  return ws;
+}
+// Analytics export: one row per machine (floor-wise or the one picked machine) with DT split by department,
+// a TOTAL row, and a Downtime sheet. File name carries floor / machine / range so exports do not get mixed up.
+function exportAnalyticsXlsx(){
+  const A = window._anLast; if(!A || !A.rows){ toast('Open Analytics first','var(--amber)'); return; }
+  if(typeof XLSX === 'undefined'){ alert('XLSX library not available'); return; }
+  const scope = A.machine ? `${_v59xFloorName(A.floor)} · ${A.machine}` : _v59xFloorName(A.floor);
+  const period = A.isRange ? _v59xRangeLabel(A.rangeMode, A.dates) : `Date ${A.date}`;
+  const title = [`Sunloc DPR — Analytics (${A.machine?'machine-wise':'floor-wise'})`, `Scope: ${scope}`, `Period: ${period}${A.isRange?` · target scaled to ${A.elapsedDays} elapsed day(s)`:''}`, `Exported ${new Date().toLocaleString('en-IN')}`];
+  const header = ['Floor','Machine','Size','Batches run','Target (L)','Produced (L)','Efficiency %','DT total (min)', ...DT_CATS.map(c=>`DT ${DT_LABELS[c]} (min)`), 'Re-sort (L)'];
+  const r2 = v => Math.round((v||0)*100)/100;
+  const rows = A.rows.map(r=>[r.floor, r.mc, r.sz, r.batches, r2(r.tgt), r2(r.prod), r.prod>0?r2(r.eff):'', Math.round(r.dt||0), ...DT_CATS.map(c=>Math.round(r.dtCats[c]||0)), r2(r.rs)]);
+  const T = A.totals;
+  const tot = ['TOTAL','','',T.batches, r2(T.tgt), r2(T.prod), T.prod>0?r2(T.eff):'', Math.round(T.dt||0), ...DT_CATS.map(c=>Math.round(A.dtCats[c]||0)), r2(T.rs)];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, _v59xSheetWithHeader(title, header, rows, tot, [8,10,8,11,12,12,12,14,...DT_CATS.map(()=>14),11]), A.machine?'Machine':'Machines');
+  const dtRows = DT_CATS.map(c=>[DT_LABELS[c], Math.round(A.dtCats[c]||0), r2(A.dtPcts[c])]);
+  XLSX.utils.book_append_sheet(wb, _v59xSheetWithHeader([`Downtime by department — ${scope}`, period], ['Department','Minutes','DT % of available'], dtRows, ['TOTAL', dtRows.reduce((s,r)=>s+r[1],0), ''], [16,10,18]), 'Downtime');
+  const rsKeys = Object.keys(A.resort||{}).sort((a,b)=>A.resort[b]-A.resort[a]);
+  if (rsKeys.length) XLSX.utils.book_append_sheet(wb, _v59xSheetWithHeader([`Re-sort by root cause — ${scope}`, period], ['Root cause','Quantity (L)'], rsKeys.map(k=>[k, r2(A.resort[k])]), ['TOTAL', r2(rsKeys.reduce((s,k)=>s+A.resort[k],0))], [28,14]), 'Re-sort');
+  const fn = `DPR_Analytics_${A.floor}${A.machine?'_'+A.machine:''}_${A.isRange?A.rangeMode:A.date}.xlsx`;
+  XLSX.writeFile(wb, fn); toast('✅ Analytics exported — '+fn,'var(--green)');
+}
+// Trends export: one row per day with production / target / efficiency / DT minutes / DT % / re-sort for the
+// selected floor (or machine), plus a TOTAL row.
+function exportTrendsXlsx(){
+  const T = window._trLast; if(!T || !T.rows || !T.rows.length){ toast('Open Trends first — no data in range','var(--amber)'); return; }
+  if(typeof XLSX === 'undefined'){ alert('XLSX library not available'); return; }
+  const scope = T.machine ? `${_v59xFloorName(T.floor)} · ${T.machine}` : _v59xFloorName(T.floor);
+  const title = [`Sunloc DPR — Trends (${T.machine?'machine-wise':'floor-wise'})`, `Scope: ${scope}`, `Period: ${_v59xRangeLabel(T.rangeMode, T.rows.map(r=>r.date))}`, `Exported ${new Date().toLocaleString('en-IN')}`];
+  const header = ['Date','Production (L)','Target (L)','Efficiency %','DT (min)','DT %','Re-sort (L)'];
+  const r2 = v => Math.round((v||0)*100)/100;
+  const rows = T.rows.map(r=>[r.date, r2(r.prod), r2(r.tgt), r.tgt>0?r2(r.prod/r.tgt*100):'', Math.round(r.dt||0), r2(r.dtPct), r2(r.rs)]);
+  const sp = T.rows.reduce((s,r)=>s+r.prod,0), st = T.rows.reduce((s,r)=>s+r.tgt,0), sd = T.rows.reduce((s,r)=>s+r.dt,0), sr = T.rows.reduce((s,r)=>s+r.rs,0);
+  const avgDtPct = T.rows.length ? T.rows.reduce((s,r)=>s+r.dtPct,0)/T.rows.length : 0;
+  const tot = ['TOTAL / AVG', r2(sp), r2(st), st>0?r2(sp/st*100):'', Math.round(sd), r2(avgDtPct), r2(sr)];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, _v59xSheetWithHeader(title, header, rows, tot, [12,14,12,12,10,8,12]), 'Daily');
+  const fn = `DPR_Trends_${T.floor}${T.machine?'_'+T.machine:''}_${T.rangeMode}.xlsx`;
+  XLSX.writeFile(wb, fn); toast('✅ Trends exported — '+fn,'var(--green)');
+}
+
+// v59X: one machine's day stats (same shape as the totals calcDayStats returns, for one machine only).
+function calcDayStatsMc(fl, d, mcId){
+  const day=loadDay(fl,d);
+  let totTgt=0,totProd=0,totDT=0,totResort=0;
+  SHIFTS.forEach(sh=>{
+    const m=migrateMachineData(day.shifts[sh].machines[mcId]||blankMachine());
+    totTgt+=tgt(fl,mcId); totProd+=mcTotalProd(m);
+    DT_CATS.forEach(c=>{ totDT+=parseFloat(m[c]||0); });
+  });
+  (day.resort||[]).forEach(r=>{ if(r.mc===mcId) totResort+=parseFloat(r.qty||0); });
+  return { totTgt:parseFloat(totTgt.toFixed(2)), totProd:parseFloat(totProd.toFixed(2)), totDT, totResort:parseFloat(totResort.toFixed(2)) };
 }
 
 function chartOpts(){
@@ -4152,6 +4251,7 @@ async function renderTrends(){
   const fl  = document.getElementById('trendFloor')?.value || 'ALL';
   const floors = fl === 'ALL' ? Object.keys(FLOORS) : [fl];
   const rangeMode = window._trendsRangeMode || 'month';
+  const _mcPick = _v59xMachineSelect('trendMachine', fl);   // v59X: '' = whole floor
 
   // Update range bar
   const rangeEl = document.getElementById('trends-range-bar');
@@ -4165,22 +4265,26 @@ async function renderTrends(){
 
   if (dates.length === 0) {
     ['ch-tprod','ch-tdt','ch-teff','ch-trs'].forEach(id => destroyChart(id));
+    window._trLast = { floor: fl, machine: _mcPick, rangeMode, rows: [] };
     return;
   }
 
-  const prods=[],dtPcts=[],effs=[],resorts=[];
+  const prods=[],dtPcts=[],effs=[],resorts=[]; const _trRows=[];
   dates.forEach(d=>{
     let p=0,dt=0,tg=0,rs=0;
     floors.forEach(f=>{
-      const s=calcDayStats(f,d);
+      const s=_mcPick ? calcDayStatsMc(f,d,_mcPick) : calcDayStats(f,d);   // v59X: one machine or the whole floor
       p+=s.totProd;dt+=s.totDT;tg+=s.totTgt;rs+=s.totResort;
     });
     prods.push(p||null);
-    const mCount=floors.reduce((s,f)=>s+FLOORS[f].machines.length,0);
-    dtPcts.push(mCount>0?parseFloat((dt/(480*mCount*3)*100).toFixed(2)):null);
+    const mCount=_mcPick ? 1 : floors.reduce((s,f)=>s+FLOORS[f].machines.length,0);
+    const _dtPct = mCount>0?parseFloat((dt/(480*mCount*3)*100).toFixed(2)):0;
+    dtPcts.push(mCount>0?_dtPct:null);
     effs.push(tg>0?parseFloat((p/tg*100).toFixed(1)):null);
     resorts.push(rs||null);
+    _trRows.push({ date:d, prod:p, tgt:tg, dt, dtPct:_dtPct, rs });
   });
+  window._trLast = { floor: fl, machine: _mcPick, rangeMode, rows: _trRows };
   const labels=dates.map(d=>{const[y,m,dy]=d.split('-');return `${dy}/${m}`;});
   const lineOpts={...chartOpts(),elements:{line:{tension:.3},point:{radius:2,hoverRadius:4}}};
   newChart('ch-tprod',{type:'line',data:{labels,datasets:[{label:'Production',data:prods,borderColor:'#00d4ff',backgroundColor:'rgba(0,212,255,.06)',fill:true,borderWidth:2}]},options:lineOpts});
@@ -4674,10 +4778,15 @@ async function renderPerf(){
       borderColor:col,backgroundColor:'transparent',fill:false,borderWidth:2,tension:.3,pointRadius:3,spanGaps:true
     };
   });
-  const _perfChartData = _datasets.length
-    ? _datasets
-    : [{label:'No incharge data',data:perfTrendDates.map(()=>null),borderColor:'#7a8ba8',borderWidth:1,pointRadius:0}];
-  newChart('ch-perf',{type:'line',data:{labels:perfTrendDates.map(d=>{const[,m,dy]=d.split('-');return`${dy}/${m}`;}),datasets:_perfChartData},options:{...chartOpts(),plugins:{...chartOpts().plugins,legend:{display:true,labels:{color:'#7a8ba8',font:{size:10},boxWidth:12}}}}});
+  // v59X (Ishan, 11 Nov — "the incharge graph is too messy, bar graph instead"): one bar per incharge = that
+  // incharge's shift-weighted average efficiency over the rolling 30 days, with the shift count in the label,
+  // best first, target line at 90 %. The per-day lines are gone.
+  const _incBars = _inchargeNames.map(nm=>{ let sum=0,cnt=0; Object.values(_inchargeDaily[nm]).forEach(c=>{ sum+=c.sum; cnt+=c.cnt; }); return { nm, avg: cnt>0?sum/cnt:0, cnt }; }).sort((a,b)=>b.avg-a.avg);
+  const _incLabels = _incBars.map(b=>b.nm.replace(/^MR\.?\s*/i,'').trim()+' ('+b.cnt+')');
+  const _incColors = _incBars.map(b=>b.avg>=90?'rgba(0,230,118,.75)':b.avg>=75?'rgba(255,171,0,.75)':'rgba(255,64,96,.75)');
+  const _perfChartData = [{ label:'Avg shift efficiency %', data:_incBars.map(b=>parseFloat(b.avg.toFixed(1))), backgroundColor:_incColors, borderRadius:3 },
+                          { label:'Target 90%', type:'line', data:_incBars.map(()=>90), borderColor:'#7a8ba8', borderDash:[4,4], borderWidth:1, pointRadius:0, fill:false }];
+  newChart('ch-perf',{type:'bar',data:{labels:_incLabels,datasets:_perfChartData},options:{...chartOpts(),plugins:{...chartOpts().plugins,legend:{display:true,labels:{color:'#7a8ba8',font:{size:10},boxWidth:12}}}}});
  } catch(err) {
    // v41ZD #1: never leave Shift Performance blank. If anything throws mid-render (bad cached
    // record, chart lib, etc.) show a clear message and log the real cause for diagnosis.

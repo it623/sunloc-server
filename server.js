@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v59W';
+const APP_BUILD = 'v59X';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -1332,6 +1332,20 @@ const MIGRATIONS = [
       );
       CREATE INDEX IF NOT EXISTS idx_gpr_ttdraw_tt ON gpr_tt_mmt_draws(tt_id);
       CREATE INDEX IF NOT EXISTS idx_gpr_ttdraw_mmt ON gpr_tt_mmt_draws(mmt_ref);
+    `
+  },
+  {
+    version: 95,
+    name: 'v59x_cn_cancellations',
+    // v59X (Shri Kant Gupta's mail, 11 Nov — invoices 3015 / 3016 showed RETURN 203 L / 84 L): SAP can cancel an
+    // A/R Credit Memo. It raises a cancellation document (14301 against 12592) and flags the original cancelled —
+    // the pair nets to zero in SAP, but Sunloc pulled BOTH as returns and doubled the quantity. cn_kind now says
+    // what each row is: 'credit' (a real return) | 'cancelled' (a memo SAP cancelled) | 'cancellation' (the
+    // document that cancelled it). Only 'credit' rows are returns anywhere in Sunloc.
+    sql: `
+      ALTER TABLE sap_credit_notes ADD COLUMN cn_kind TEXT NOT NULL DEFAULT 'credit';
+      ALTER TABLE sap_credit_notes ADD COLUMN cancel_of_doc_num TEXT;
+      ALTER TABLE sap_credit_notes ADD COLUMN cancelled_by_doc_num TEXT;
     `
   },
   {
@@ -5242,6 +5256,10 @@ async function ensurePostgresTables() {
         virgin_kg REAL NOT NULL DEFAULT 0, conc_kg_per_l REAL, alloc_id INTEGER, seq INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT (NOW()::TEXT))`,
       `CREATE INDEX IF NOT EXISTS idx_gpr_ttdraw_tt ON gpr_tt_mmt_draws(tt_id)`,
       `CREATE INDEX IF NOT EXISTS idx_gpr_ttdraw_mmt ON gpr_tt_mmt_draws(mmt_ref)`,
+      // v59X migration-95 mirror — cancelled A/R Credit Memos
+      `ALTER TABLE sap_credit_notes ADD COLUMN IF NOT EXISTS cn_kind TEXT NOT NULL DEFAULT 'credit'`,
+      `ALTER TABLE sap_credit_notes ADD COLUMN IF NOT EXISTS cancel_of_doc_num TEXT`,
+      `ALTER TABLE sap_credit_notes ADD COLUMN IF NOT EXISTS cancelled_by_doc_num TEXT`,
       `CREATE INDEX IF NOT EXISTS idx_gpr_rs_day ON gpr_return_solution(production_day, floor)`,
       `ALTER TABLE gpr_tt ADD COLUMN IF NOT EXISTS return_solution_l REAL`,
       `ALTER TABLE gpr_tt ADD COLUMN IF NOT EXISTS return_solution_kg REAL`,
@@ -7582,6 +7600,31 @@ function _v57yClassifyInvoice(inv) {
   return { kind: 'invoice', cancelOf: null };
 }
 
+// v59X: same reading for A/R Credit Memos — SAP's cancellation document carries CancelStatus csCancel (and
+// "Based On A/R Credit Memos 12592" in its remarks); the memo it cancels is flagged csYes / Cancelled tYES.
+function _v59xClassifyCreditNote(cn) {
+  const cs = String((cn && cn.CancelStatus) || '');
+  const comments = String((cn && cn.Comments) || '');
+  const m = comments.match(/Based On A\/R Credit (?:Memos?|Notes?)\s+(\d+)/i) || comments.match(/Based On A\/R Invoices?\s+(\d+)/i);
+  if (cs === 'csCancel' || (m && cs !== 'csYes')) return { kind: 'cancellation', cancelOf: m ? m[1] : null };
+  if (cs === 'csYes' || String((cn && cn.Cancelled) || '') === 'tYES') return { kind: 'cancelled', cancelOf: null };
+  return { kind: 'credit', cancelOf: null };
+}
+// v59X: after a pull, pair every cancellation document with the memo it cancelled (by DocNum, same customer
+// preferred) so the original reads 'cancelled' even if SAP's own flag on it was pulled before the cancellation.
+async function _v59xPairCancelledCreditNotes() {
+  const sel = `SELECT sap_doc_num, card_code, cancel_of_doc_num FROM sap_credit_notes WHERE cn_kind='cancellation' AND COALESCE(cancel_of_doc_num,'') <> ''`;
+  const cs = pgPool ? (await pgPool.query(sel)).rows : db.prepare(sel).all();
+  let paired = 0;
+  for (const c of cs) {
+    const upd = `UPDATE sap_credit_notes SET cn_kind='cancelled', cancelled_by_doc_num=$1 WHERE sap_doc_num=$2 AND cn_kind <> 'cancellation' AND (card_code=$3 OR COALESCE(card_code,'')='' OR $3='')`;
+    const args = [String(c.sap_doc_num || ''), String(c.cancel_of_doc_num), String(c.card_code || '')];
+    const r = pgPool ? (await pgPool.query(upd, args)).rowCount : db.prepare(upd.replace(/\$\d+/g, '?')).run(args[0], args[1], args[2], args[2]).changes;
+    paired += r || 0;
+  }
+  return paired;
+}
+
 async function _v57yPcLookup(itemCode) {
   const out = { pc: String(itemCode || '').trim(), size: '', colour: '' };
   if (!out.pc) return out;
@@ -7654,16 +7697,19 @@ async function _v57yIngestCreditNotes(lookbackDays) {
       const batch = (orig && orig.batch_number) || (_extractSapInvoiceBatch(cn, cn.U_SunlocBatch || '').batch) || '';
       const docTotal = parseFloat(cn.DocTotal) || 0, vat = parseFloat(cn.VatSum) || 0;
       const payload = JSON.stringify(cn);
+      const kind = _v59xClassifyCreditNote(cn);   // v59X
       const vals = [id, cn.DocEntry, String(cn.DocNum || ''), cn.DocDate || null, cn.CardName || '', cn.CardCode || '', String(cn.NumAtCard || ''), String(cn.Comments || ''),
                     qty, boxes, docTotal - vat, vat, docTotal, pc, size, colour, batch,
-                    orig ? orig.sap_doc_entry : null, orig ? String(orig.sap_doc_num || '') : null, link.method, payload];
+                    orig ? orig.sap_doc_entry : null, orig ? String(orig.sap_doc_num || '') : null, link.method, payload,
+                    kind.kind, kind.cancelOf];   // v59X $22 / $23
       if (pgPool) {
         await pgPool.query(`
           INSERT INTO sap_credit_notes (id, sap_doc_entry, sap_doc_num, doc_date, customer, card_code, num_at_card, comments,
             total_qty_lakhs, total_boxes, taxable_amount, igst_amount, total_amount, pc_code, size, colour, batch_number,
-            orig_invoice_doc_entry, orig_invoice_doc_num, link_method, payload_json, fetched_at, updated_at)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,NOW()::TEXT,NOW()::TEXT)
+            orig_invoice_doc_entry, orig_invoice_doc_num, link_method, payload_json, fetched_at, updated_at, cn_kind, cancel_of_doc_num)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,NOW()::TEXT,NOW()::TEXT,$22,$23)
           ON CONFLICT (sap_doc_entry) DO UPDATE SET
+            cn_kind=CASE WHEN $22='credit' AND sap_credit_notes.cn_kind='cancelled' THEN 'cancelled' ELSE $22 END, cancel_of_doc_num=COALESCE($23, sap_credit_notes.cancel_of_doc_num),
             sap_doc_num=$3, doc_date=$4, customer=$5, card_code=$6, num_at_card=$7, comments=$8,
             total_qty_lakhs=CASE WHEN $9>0 THEN $9 ELSE sap_credit_notes.total_qty_lakhs END,
             total_boxes=CASE WHEN $10>0 THEN $10 ELSE sap_credit_notes.total_boxes END,
@@ -7678,9 +7724,10 @@ async function _v57yIngestCreditNotes(lookbackDays) {
         db.prepare(`
           INSERT INTO sap_credit_notes (id, sap_doc_entry, sap_doc_num, doc_date, customer, card_code, num_at_card, comments,
             total_qty_lakhs, total_boxes, taxable_amount, igst_amount, total_amount, pc_code, size, colour, batch_number,
-            orig_invoice_doc_entry, orig_invoice_doc_num, link_method, payload_json, fetched_at, updated_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'))
+            orig_invoice_doc_entry, orig_invoice_doc_num, link_method, payload_json, fetched_at, updated_at, cn_kind, cancel_of_doc_num)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'),?,?)
           ON CONFLICT(sap_doc_entry) DO UPDATE SET
+            cn_kind=CASE WHEN excluded.cn_kind='credit' AND sap_credit_notes.cn_kind='cancelled' THEN 'cancelled' ELSE excluded.cn_kind END, cancel_of_doc_num=COALESCE(excluded.cancel_of_doc_num, sap_credit_notes.cancel_of_doc_num),
             sap_doc_num=excluded.sap_doc_num, doc_date=excluded.doc_date, customer=excluded.customer, card_code=excluded.card_code, num_at_card=excluded.num_at_card, comments=excluded.comments,
             total_qty_lakhs=CASE WHEN excluded.total_qty_lakhs>0 THEN excluded.total_qty_lakhs ELSE sap_credit_notes.total_qty_lakhs END,
             total_boxes=CASE WHEN excluded.total_boxes>0 THEN excluded.total_boxes ELSE sap_credit_notes.total_boxes END,
@@ -7695,6 +7742,10 @@ async function _v57yIngestCreditNotes(lookbackDays) {
       upserted++; if (orig) linked++;
     } catch (e) { console.warn('[v57Y credit-notes] upsert error for DocEntry', cn && cn.DocEntry, ':', e.message); }
   }
+  // v59X: pair cancellation documents with the memos they cancel (also heals rows pulled before this build:
+  // the cancellation document is re-pulled on every run because it falls inside the look-back).
+  let cancelledPaired = 0;
+  try { cancelledPaired = await _v59xPairCancelledCreditNotes(); } catch (e) { console.warn('[v59X credit-notes] pairing error:', e.message); }
   // Memos stored earlier without a link: retry (their invoice may have been pulled since).
   try {
     const sel = `SELECT id, payload_json FROM sap_credit_notes WHERE orig_invoice_doc_entry IS NULL AND orig_invoice_doc_num IS NULL AND payload_json IS NOT NULL LIMIT 300`;
@@ -7710,7 +7761,7 @@ async function _v57yIngestCreditNotes(lookbackDays) {
     }
   } catch (e) { console.warn('[v57Y credit-notes] relink pass:', e.message); }
   if (notes.length) console.log(`[v57Y credit-notes] fetched ${notes.length}, upserted ${upserted}, linked ${linked}${r.degraded ? ' (degraded)' : ''}`);
-  return { fetched: notes.length, upserted, linked, degraded: !!r.degraded };
+  return { fetched: notes.length, upserted, linked, cancelledPaired, degraded: !!r.degraded };
 }
 
 // Cancellation self-heal, every poll (idempotent): (1) rows ingested before v57Y whose stored payload
@@ -7797,7 +7848,15 @@ async function _v57yReturnStockRows() {
   const sel = `SELECT c.*, i.id AS inv_id, i.invoice_date AS inv_date, i.total_qty_lakhs AS inv_qty, i.total_boxes AS inv_boxes, i.customer AS inv_customer, i.batch_number AS inv_batch, i.inv_kind AS inv_kind
                  FROM sap_credit_notes c LEFT JOIN invoices_received i ON i.sap_doc_entry = c.orig_invoice_doc_entry
                 ORDER BY c.doc_date DESC, c.sap_doc_entry DESC`;
-  const cns = pgPool ? (await pgPool.query(sel)).rows : db.prepare(sel).all();
+  let cns = pgPool ? (await pgPool.query(sel)).rows : db.prepare(sel).all();
+  // v59X: a cancelled memo and its cancellation document are not returns — they net to zero in SAP. Kept only
+  // when Sunloc has already acted on the memo (re-batch / remelt rows point at it), flagged cn_cancelled.
+  const _actedOn = new Set();
+  try {
+    const q1 = `SELECT DISTINCT return_id AS rid FROM rebatch_log WHERE COALESCE(return_id,'') <> '' UNION SELECT DISTINCT return_id FROM return_actions WHERE COALESCE(return_id,'') <> '' AND status <> 'cancelled'`;
+    (pgPool ? (await pgPool.query(q1)).rows : db.prepare(q1).all()).forEach(r => _actedOn.add(r.rid));
+  } catch (_) {}
+  cns = cns.filter(c => (c.cn_kind || 'credit') === 'credit' || _actedOn.has(c.id));
   const lg = pgPool ? (await pgPool.query(`SELECT * FROM rebatch_log WHERE COALESCE(return_id,'') <> '' ORDER BY ts`)).rows
                     : db.prepare(`SELECT * FROM rebatch_log WHERE COALESCE(return_id,'') <> '' ORDER BY ts`).all();
   const byRet = {}; const allIds = [];
@@ -7863,6 +7922,7 @@ async function _v57yReturnStockRows() {
       id: c.id, cn_no: c.sap_doc_num, cn_doc_entry: c.sap_doc_entry, cn_date: c.doc_date, num_at_card: c.num_at_card, comments: c.comments,
       invoice_no: c.orig_invoice_doc_num || null, invoice_doc_entry: c.orig_invoice_doc_entry || null, invoice_id: c.inv_id || null, invoice_date: c.inv_date || null,
       invoice_qty: invQ, invoice_boxes: parseInt(c.inv_boxes, 10) || 0, invoice_kind: c.inv_kind || null,
+      cn_kind: c.cn_kind || 'credit', cn_cancelled: (c.cn_kind || 'credit') !== 'credit', cancelled_by_doc_num: c.cancelled_by_doc_num || null,   // v59X
       customer: c.customer || c.inv_customer || '', card_code: c.card_code || '', batch: c.batch_number || c.inv_batch || '', prodMonth: pmMap[bn] || null,
       pc_code: c.pc_code || '', size: c.size || '', colour: c.colour || '',
       returned_qty: retQ, returned_boxes: retB, amount: parseFloat(c.total_amount) || 0, taxable: parseFloat(c.taxable_amount) || 0, igst: parseFloat(c.igst_amount) || 0,
@@ -9469,10 +9529,14 @@ app.get('/api/invoice/received', async (req, res) => {
       try {
         const des = rows.map(r => parseInt(r.sap_doc_entry, 10)).filter(Number.isFinite);
         let cn;
-        if (pgPool) cn = (await pgPool.query(`SELECT orig_invoice_doc_entry AS de, sap_doc_num, doc_date, total_qty_lakhs, total_boxes, total_amount FROM sap_credit_notes WHERE orig_invoice_doc_entry = ANY($1)`, [des])).rows;
-        else { const ph = des.map(() => '?').join(',') || 'NULL'; cn = db.prepare(`SELECT orig_invoice_doc_entry AS de, sap_doc_num, doc_date, total_qty_lakhs, total_boxes, total_amount FROM sap_credit_notes WHERE orig_invoice_doc_entry IN (${ph})`).all(...des); }
+        // v59X: only live credit memos count; a cancelled memo + its cancellation document are reported as a note (cn_cancelled_refs), not as a return.
+        if (pgPool) cn = (await pgPool.query(`SELECT orig_invoice_doc_entry AS de, sap_doc_num, doc_date, total_qty_lakhs, total_boxes, total_amount, COALESCE(cn_kind,'credit') AS cn_kind, cancelled_by_doc_num FROM sap_credit_notes WHERE orig_invoice_doc_entry = ANY($1)`, [des])).rows;
+        else { const ph = des.map(() => '?').join(',') || 'NULL'; cn = db.prepare(`SELECT orig_invoice_doc_entry AS de, sap_doc_num, doc_date, total_qty_lakhs, total_boxes, total_amount, COALESCE(cn_kind,'credit') AS cn_kind, cancelled_by_doc_num FROM sap_credit_notes WHERE orig_invoice_doc_entry IN (${ph})`).all(...des); }
         const byDe = {};
-        for (const c of (cn || [])) { const k = String(c.de); const o = byDe[k] = byDe[k] || { qty: 0, boxes: 0, amount: 0, refs: [] }; o.qty += parseFloat(c.total_qty_lakhs) || 0; o.boxes += parseInt(c.total_boxes, 10) || 0; o.amount += parseFloat(c.total_amount) || 0; o.refs.push({ no: c.sap_doc_num, date: c.doc_date, qty: Math.round((parseFloat(c.total_qty_lakhs) || 0) * 100) / 100 }); }
+        for (const c of (cn || [])) { const k = String(c.de); const o = byDe[k] = byDe[k] || { qty: 0, boxes: 0, amount: 0, refs: [], cancelledRefs: [] };
+          if (c.cn_kind === 'cancelled') { o.cancelledRefs.push({ no: c.sap_doc_num, date: c.doc_date, by: c.cancelled_by_doc_num || null, qty: Math.round((parseFloat(c.total_qty_lakhs) || 0) * 100) / 100 }); continue; }
+          if (c.cn_kind === 'cancellation') continue;
+          o.qty += parseFloat(c.total_qty_lakhs) || 0; o.boxes += parseInt(c.total_boxes, 10) || 0; o.amount += parseFloat(c.total_amount) || 0; o.refs.push({ no: c.sap_doc_num, date: c.doc_date, qty: Math.round((parseFloat(c.total_qty_lakhs) || 0) * 100) / 100 }); }
         let retTargets;
         if (pgPool) retTargets = (await pgPool.query(`SELECT DISTINCT UPPER(TRIM(target_batch)) AS bn FROM rebatch_log WHERE COALESCE(return_id,'') <> ''`)).rows;
         else retTargets = db.prepare(`SELECT DISTINCT UPPER(TRIM(target_batch)) AS bn FROM rebatch_log WHERE COALESCE(return_id,'') <> ''`).all();
@@ -9511,6 +9575,7 @@ app.get('/api/invoice/received', async (req, res) => {
           r.inv_kind = r.inv_kind || 'invoice';
           const o = byDe[String(r.sap_doc_entry)];
           r.cn_qty = o ? Math.round(o.qty * 100) / 100 : 0; r.cn_boxes = o ? o.boxes : 0; r.cn_amount = o ? Math.round(o.amount * 100) / 100 : 0; r.cn_refs = o ? o.refs : [];
+          r.cn_cancelled_refs = o ? o.cancelledRefs : [];   // v59X
           const toks = String(r.batch_number || '').split(/[\s,]+/).map(t => t.trim().toUpperCase()).filter(Boolean);
           r.from_return = toks.some(t => retSet.has(t));
           let rq = 0, rb = 0;
@@ -32271,6 +32336,14 @@ app.get('/api/gpr/material-issuance', async (req, res) => {
     const masters = await gprLoadMasters();
     const C = Object.assign({}, GPR_SEED_MASTERS.gpr_constants, masters.gpr_constants || {});
     const planYield = Number(req.query.yield || C.issuancePlanYieldPct || 105);
+    // v59X (Ishan, 11 Nov): gelatine-to-issue is split into virgin + reuse (cutting / salvage / return solution).
+    // Rule: whatever reuse material a period generated must be consumed back in it; if generation ran ahead of
+    // consumption the gap is worked off by issuing less virgin. `extra` = plant target of additional reuse
+    // consumption per day above generation (kg/day, default 0); `spread` = over how many coming days the
+    // one-time reduction is taken (1 = all on the next day). Example 7 days: generated 100, consumed 85,
+    // extra 50/day → reduction = 15 + 50×7 = 365 kg; spread 5 → 73 kg/day for the next 5 days.
+    const extraKgPerDay = Math.max(0, Number(req.query.extra ?? C.issuanceExtraKgPerDay ?? 0) || 0);
+    const spreadDays = Math.max(1, Math.round(Number(req.query.spread ?? C.issuanceSpreadDays ?? 1) || 1));
     // v58L item 5: DPR entries for a production day are complete 2 h after it turns (08:00 IST), so the
     // basis day is "yesterday" relative to the production day as of 2 h ago — the 18th becomes the
     // basis from 08:00 on the 19th, and the 7-day / month windows roll with it.
@@ -32287,23 +32360,46 @@ app.get('/api/gpr/material-issuance', async (req, res) => {
     const out = {};
     Object.entries(win).forEach(([k, [a, b]]) => {
       const floors = {};
-      FL.forEach(fl => { floors[fl] = { packableKg: 0, days: 0, lakhs: 0, batches: new Set() }; });
+      const _blank = () => ({ packableKg: 0, days: 0, lakhs: 0, batches: new Set(), genCutSalKg: 0, genReturnKg: 0, consCutSalKg: 0, consReturnKg: 0 });
+      FL.forEach(fl => { floors[fl] = _blank(); });
       Object.entries(grid).forEach(([d, fls]) => {
         if (d < a || d > b) return;
         Object.entries(fls).forEach(([fl, c]) => {
-          if (!floors[fl]) floors[fl] = { packableKg: 0, days: 0, lakhs: 0, batches: new Set() };
+          if (!floors[fl]) floors[fl] = _blank();
           if (c.num > 0) { floors[fl].packableKg += c.num; floors[fl].days += 1; }
+          const M = c.material || {};   // v59X: reuse generated vs consumed on this floor-day (accepted + pending generation; WIP estimates excluded)
+          floors[fl].genCutSalKg += Number(M.generatedKg || 0); floors[fl].genReturnKg += Number(M.returnRecoveredKg || 0);
+          floors[fl].consCutSalKg += Number(M.reuseInKg || 0); floors[fl].consReturnKg += Number(M.returnUsedKg || 0);
           (c.working || []).forEach(w => { floors[fl].lakhs += Number(w.packableDayL || 0); floors[fl].batches.add(w.batch); });
         });
       });
       const rows = Object.keys(floors).sort(_v58hFloorSort2).map(fl => {
         const f = floors[fl]; const perDay = f.days > 0 ? f.packableKg / f.days : 0;
-        return { floor: fl, packableKg: +f.packableKg.toFixed(1), packableLakhs: +f.lakhs.toFixed(2), days: f.days, batches: f.batches.size,
-                 packablePerDayKg: +perDay.toFixed(1), issueKg: +(perDay / (planYield / 100)).toFixed(1) };
+        const issueKg = perDay / (planYield / 100);
+        // v59X split
+        const genKg = f.genCutSalKg + f.genReturnKg, consKg = f.consCutSalKg + f.consReturnKg;
+        const extraKg = extraKgPerDay * f.days;
+        const shortfallKg = Math.max(0, genKg + extraKg - consKg);                 // one-time stock to work off
+        const surplusKg = Math.max(0, consKg - (genKg + extraKg));                // consumed more than generated + target
+        const reductionPerDayKg = shortfallKg / spreadDays;
+        const reusePerDayKg = f.days > 0 ? genKg / f.days : 0;                    // generation must be consumed back daily
+        const cutSalPerDayKg = f.days > 0 ? f.genCutSalKg / f.days : 0, returnPerDayKg = f.days > 0 ? f.genReturnKg / f.days : 0;
+        const virginPerDayKg = Math.max(0, issueKg - reusePerDayKg - reductionPerDayKg);
+        const r1 = v => +Number(v || 0).toFixed(1);
+        return { floor: fl, packableKg: r1(f.packableKg), packableLakhs: +f.lakhs.toFixed(2), days: f.days, batches: f.batches.size,
+                 packablePerDayKg: r1(perDay), issueKg: r1(issueKg),
+                 generatedKg: r1(genKg), generatedCutSalKg: r1(f.genCutSalKg), generatedReturnKg: r1(f.genReturnKg),
+                 consumedKg: r1(consKg), consumedCutSalKg: r1(f.consCutSalKg), consumedReturnKg: r1(f.consReturnKg),
+                 extraTargetKg: r1(extraKg), shortfallKg: r1(shortfallKg), surplusKg: r1(surplusKg), spreadDays,
+                 reusePerDayKg: r1(reusePerDayKg), cutSalPerDayKg: r1(cutSalPerDayKg), returnPerDayKg: r1(returnPerDayKg),
+                 reductionPerDayKg: r1(reductionPerDayKg), virginPerDayKg: r1(virginPerDayKg) };
       });
-      out[k] = { from: a, to: b, rows, totalIssueKg: +rows.reduce((x, r) => x + r.issueKg, 0).toFixed(1), totalPackablePerDayKg: +rows.reduce((x, r) => x + r.packablePerDayKg, 0).toFixed(1) };
+      const sum = key => +rows.reduce((x, r) => x + (r[key] || 0), 0).toFixed(1);
+      out[k] = { from: a, to: b, rows, totalIssueKg: sum('issueKg'), totalPackablePerDayKg: sum('packablePerDayKg'),
+                 totalVirginPerDayKg: sum('virginPerDayKg'), totalReusePerDayKg: sum('reusePerDayKg'), totalReductionPerDayKg: sum('reductionPerDayKg'),
+                 totalGeneratedKg: sum('generatedKg'), totalConsumedKg: sum('consumedKg'), totalShortfallKg: sum('shortfallKg') };
     });
-    res.json({ ok: true, forDay: dayShift(today, 1), today, basisEndsOn: yday, planYieldPct: planYield, graceHours: graceH, windows: out });
+    res.json({ ok: true, forDay: dayShift(today, 1), today, basisEndsOn: yday, planYieldPct: planYield, graceHours: graceH, extraKgPerDay, spreadDays, windows: out });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 function _v58hFloorSort2(a, b) { const O = { GF: 0, '1F': 1, '2F': 2 }; return (O[a] ?? 9) - (O[b] ?? 9) || String(a).localeCompare(String(b)); }

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v59W</title>
+<title>Sunloc Tracking Suite v1.0 · build v59X</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v59W</p>
+      <p>Tracking Suite v1.0 · build v59X</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v59W</p>
+      <p>Tracking Suite v1.0 · build v59X</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -11435,6 +11435,7 @@ function _v39_renderInvoiceTable() {
     const _cnq = parseFloat(inv.cn_qty) || 0;
     const natureBadge = (_isCanc ? `<span style="background:#fee2e2;color:#b91c1c;border:1px solid #fca5a5;padding:1px 5px;border-radius:3px;font-size:9px;margin-left:4px;white-space:nowrap" title="Cancelled in SAP${inv.cancelled_by_doc_num?' by A/R Invoice-Cancellation '+inv.cancelled_by_doc_num:''}${inv.cancelled_at?' on '+String(inv.cancelled_at).slice(0,10):''}">✖ CANCELLED${inv.cancelled_by_doc_num?' → '+inv.cancelled_by_doc_num:''}</span>` : '')
       + (_cnq > 0 ? `<span style="background:#fef3c7;color:#92400e;border:1px solid #fcd34d;padding:1px 5px;border-radius:3px;font-size:9px;margin-left:4px;white-space:nowrap" title="Material returned — credit note(s) ${(inv.cn_refs||[]).map(r=>r.no+' ('+r.qty+' L'+(r.date?', '+String(r.date).slice(0,10):'')+')').join(', ')}">↩ RETURN ${_cnq.toFixed(2)} L · CN ${(inv.cn_refs||[]).map(r=>r.no).join(', ')}</span>` : '')
+      + ((inv.cn_cancelled_refs||[]).length ? `<span style="background:#f3f4f6;color:#6b7280;border:1px solid #d1d5db;padding:1px 5px;border-radius:3px;font-size:9px;margin-left:4px;white-space:nowrap;text-decoration:line-through" title="Credit note(s) SAP cancelled — net effect nil, not a return: ${(inv.cn_cancelled_refs||[]).map(r=>r.no+' ('+r.qty+' L) cancelled'+(r.by?' by '+r.by:'')).join(', ')}">CN ${(inv.cn_cancelled_refs||[]).map(r=>r.no+(r.by?'→'+r.by:'')).join(', ')} cancelled</span>` : '')   /* v59X */
       + (inv.from_return ? `<span style="background:#ecfdf5;color:#047857;border:1px solid #6ee7b7;padding:1px 5px;border-radius:3px;font-size:9px;margin-left:4px;white-space:nowrap" title="Return stock re-dispatched on this invoice (R-boxes tagged to a credit note) — deducted on the NET basis; see Return Stock">♻ from Return${(parseFloat(inv.return_qty)||0)>0?` ${(parseFloat(inv.return_qty)||0).toFixed(2)} L`:''}</span>` : '');
     const _fig = _v57yFig(inv);
     const _rq58 = parseFloat(inv.return_qty) || 0;   // v58A: return stock re-invoiced on this invoice
