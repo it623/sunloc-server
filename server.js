@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v59X';
+const APP_BUILD = 'v59Y';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -9366,6 +9366,11 @@ app.get('/api/invoice/received', async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit, 10) || 200, 5000);   // v51ZC: GI shows ALL invoices
     const prodMonth = (req.query.prod_month || '').toString().trim();   // v53D: month-slice attribution
     const includeAllocs = String(req.query.include_allocs || '') === '1';   // v53H: per-batch grain for exports
+    // v59Y (Ishan, 12 Nov): with pm_breakdown=1 and no prod_month filter, every invoice also carries
+    // pm_split { 'YYYY-MM': { qty, boxes, batches } } — its quantity by production month, sliced from
+    // invoice_batch_alloc exactly as the month filter does — so the KPI strip can show a live month-wise
+    // tooltip in the All-months view without a second request.
+    const pmBreakdown = !prodMonth && String(req.query.pm_breakdown || '') === '1';
     const wheres = [];
     const args = [];
     if (status) { wheres.push(pgPool ? `dispatch_status = $${args.length+1}` : 'dispatch_status = ?'); args.push(status); }
@@ -9392,7 +9397,7 @@ app.get('/api/invoice/received', async (req, res) => {
     // fallback the order's planned startDate) equals the selected month. Invoices without alloc rows
     // fall back to whole-invoice attribution by their single batch's month; a multi-batch invoice
     // with no allocs keeps the old any-batch behaviour and is flagged unsliced (never invent a split).
-    if (prodMonth && rows.length) {
+    if ((prodMonth || pmBreakdown) && rows.length) {
       try {
         const invIds = rows.map(r => r.id);
         let allocRows;
@@ -9427,8 +9432,24 @@ app.get('/api/invoice/received', async (req, res) => {
           // v53U tier 3: admin-entered mfg month for standalone legacy batches
           { const _still = bns.filter(b => !pmMap[b]); if (_still.length) { const lm = await _v53uLegacyMonths(_still); for (const k of Object.keys(lm)) pmMap[k] = lm[k]; } }
         }
+        if (pmBreakdown) {
+          for (const inv of rows) {
+            const allocs = allocByInv[inv.id] || [];
+            const split = {};
+            const add = (ym, q, b, bn) => { const o = split[ym] = split[ym] || { qty: 0, boxes: 0, batches: [] }; o.qty = Math.round((o.qty + q) * 100) / 100; o.boxes += b; if (bn && !o.batches.includes(bn)) o.batches.push(bn); };
+            if (allocs.length) {
+              for (const a of allocs) { const b = String(a.batch_number).trim().toUpperCase(); add(pmMap[b] || '—', parseFloat(a.qty_lakhs) || 0, parseInt(a.boxes, 10) || 0, b); }
+            } else {
+              const toks = String(inv.batch_number || '').split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
+              const ym = (toks.map(b => pmMap[b]).filter(Boolean).sort()[0]) || '—';   // unsliced: whole invoice to its earliest batch month
+              add(ym, parseFloat(inv.total_qty_lakhs) || 0, parseInt(inv.total_boxes, 10) || 0, toks[0] || '');
+              if (toks.length > 1) split[ym].unsliced = true;
+            }
+            inv.pm_split = split;
+          }
+        }
         const kept = [];
-        for (const inv of rows) {
+        for (const inv of (prodMonth ? rows : [])) {
           const allocs = allocByInv[inv.id] || [];
           const totQ = parseFloat(inv.total_qty_lakhs) || 0;
           if (allocs.length) {
@@ -9455,7 +9476,7 @@ app.get('/api/invoice/received', async (req, res) => {
             kept.push(inv);
           }
         }
-        rows = kept;
+        if (prodMonth) rows = kept;
       } catch (e) { console.warn('[v53D pm-slice] failed (falling back to unsliced list):', e.message); }
     }
     // v41s Q2: post-filter by pc_code/size/colour. Match ANY line of the invoice
@@ -32336,12 +32357,12 @@ app.get('/api/gpr/material-issuance', async (req, res) => {
     const masters = await gprLoadMasters();
     const C = Object.assign({}, GPR_SEED_MASTERS.gpr_constants, masters.gpr_constants || {});
     const planYield = Number(req.query.yield || C.issuancePlanYieldPct || 105);
-    // v59X (Ishan, 11 Nov): gelatine-to-issue is split into virgin + reuse (cutting / salvage / return solution).
-    // Rule: whatever reuse material a period generated must be consumed back in it; if generation ran ahead of
-    // consumption the gap is worked off by issuing less virgin. `extra` = plant target of additional reuse
-    // consumption per day above generation (kg/day, default 0); `spread` = over how many coming days the
-    // one-time reduction is taken (1 = all on the next day). Example 7 days: generated 100, consumed 85,
-    // extra 50/day → reduction = 15 + 50×7 = 365 kg; spread 5 → 73 kg/day for the next 5 days.
+    // v59X/v59Y (Ishan, 11–12 Nov): gelatine-to-issue is split into virgin + reuse (cutting / salvage / return
+    // solution). Reuse in a window = NET STOCK CONSUMPTION = consumed back − generated. If consumption ran ahead of
+    // generation, that much virgin issued stayed unused and comes off the coming days' virgin; if generation ran
+    // ahead, the leftover stock has to be consumed in the coming days and likewise comes off virgin. Either way the
+    // one-time adjustment = |consumed − generated| ÷ `spread` days (1 = all on the next day). `extra` = plant target
+    // of extra reuse consumption per day (kg/day) — a standing cut to virgin of the same size.
     const extraKgPerDay = Math.max(0, Number(req.query.extra ?? C.issuanceExtraKgPerDay ?? 0) || 0);
     const spreadDays = Math.max(1, Math.round(Number(req.query.spread ?? C.issuanceSpreadDays ?? 1) || 1));
     // v58L item 5: DPR entries for a production day are complete 2 h after it turns (08:00 IST), so the
@@ -32376,28 +32397,24 @@ app.get('/api/gpr/material-issuance', async (req, res) => {
       const rows = Object.keys(floors).sort(_v58hFloorSort2).map(fl => {
         const f = floors[fl]; const perDay = f.days > 0 ? f.packableKg / f.days : 0;
         const issueKg = perDay / (planYield / 100);
-        // v59X split
+        // v59Y split (see the route comment)
         const genKg = f.genCutSalKg + f.genReturnKg, consKg = f.consCutSalKg + f.consReturnKg;
-        const extraKg = extraKgPerDay * f.days;
-        const shortfallKg = Math.max(0, genKg + extraKg - consKg);                 // one-time stock to work off
-        const surplusKg = Math.max(0, consKg - (genKg + extraKg));                // consumed more than generated + target
-        const reductionPerDayKg = shortfallKg / spreadDays;
-        const reusePerDayKg = f.days > 0 ? genKg / f.days : 0;                    // generation must be consumed back daily
-        const cutSalPerDayKg = f.days > 0 ? f.genCutSalKg / f.days : 0, returnPerDayKg = f.days > 0 ? f.genReturnKg / f.days : 0;
-        const virginPerDayKg = Math.max(0, issueKg - reusePerDayKg - reductionPerDayKg);
+        const genPerDayKg = f.days > 0 ? genKg / f.days : 0, consPerDayKg = f.days > 0 ? consKg / f.days : 0;
+        const netStockKg = consKg - genKg;                                        // + drawn from stock · − added to stock
+        const adjustPerDayKg = Math.abs(netStockKg) / spreadDays;                 // one-time cut to virgin, either direction
+        const virginPerDayKg = Math.max(0, issueKg - genPerDayKg - adjustPerDayKg - extraKgPerDay);
         const r1 = v => +Number(v || 0).toFixed(1);
         return { floor: fl, packableKg: r1(f.packableKg), packableLakhs: +f.lakhs.toFixed(2), days: f.days, batches: f.batches.size,
                  packablePerDayKg: r1(perDay), issueKg: r1(issueKg),
                  generatedKg: r1(genKg), generatedCutSalKg: r1(f.genCutSalKg), generatedReturnKg: r1(f.genReturnKg),
                  consumedKg: r1(consKg), consumedCutSalKg: r1(f.consCutSalKg), consumedReturnKg: r1(f.consReturnKg),
-                 extraTargetKg: r1(extraKg), shortfallKg: r1(shortfallKg), surplusKg: r1(surplusKg), spreadDays,
-                 reusePerDayKg: r1(reusePerDayKg), cutSalPerDayKg: r1(cutSalPerDayKg), returnPerDayKg: r1(returnPerDayKg),
-                 reductionPerDayKg: r1(reductionPerDayKg), virginPerDayKg: r1(virginPerDayKg) };
+                 genPerDayKg: r1(genPerDayKg), consPerDayKg: r1(consPerDayKg), netStockKg: r1(netStockKg),
+                 adjustPerDayKg: r1(adjustPerDayKg), extraKgPerDay: r1(extraKgPerDay), spreadDays, virginPerDayKg: r1(virginPerDayKg) };
       });
       const sum = key => +rows.reduce((x, r) => x + (r[key] || 0), 0).toFixed(1);
       out[k] = { from: a, to: b, rows, totalIssueKg: sum('issueKg'), totalPackablePerDayKg: sum('packablePerDayKg'),
-                 totalVirginPerDayKg: sum('virginPerDayKg'), totalReusePerDayKg: sum('reusePerDayKg'), totalReductionPerDayKg: sum('reductionPerDayKg'),
-                 totalGeneratedKg: sum('generatedKg'), totalConsumedKg: sum('consumedKg'), totalShortfallKg: sum('shortfallKg') };
+                 totalVirginPerDayKg: sum('virginPerDayKg'), totalGenPerDayKg: sum('genPerDayKg'), totalConsPerDayKg: sum('consPerDayKg'),
+                 totalAdjustPerDayKg: sum('adjustPerDayKg'), totalGeneratedKg: sum('generatedKg'), totalConsumedKg: sum('consumedKg'), totalNetStockKg: sum('netStockKg') };
     });
     res.json({ ok: true, forDay: dayShift(today, 1), today, basisEndsOn: yday, planYieldPct: planYield, graceHours: graceH, extraKgPerDay, spreadDays, windows: out });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }

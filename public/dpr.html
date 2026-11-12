@@ -499,7 +499,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v59X</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v59Y</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -4287,8 +4287,14 @@ async function renderTrends(){
   window._trLast = { floor: fl, machine: _mcPick, rangeMode, rows: _trRows };
   const labels=dates.map(d=>{const[y,m,dy]=d.split('-');return `${dy}/${m}`;});
   const lineOpts={...chartOpts(),elements:{line:{tension:.3},point:{radius:2,hoverRadius:4}}};
-  newChart('ch-tprod',{type:'line',data:{labels,datasets:[{label:'Production',data:prods,borderColor:'#00d4ff',backgroundColor:'rgba(0,212,255,.06)',fill:true,borderWidth:2}]},options:lineOpts});
-  newChart('ch-tdt',{type:'line',data:{labels,datasets:[{label:'DT%',data:dtPcts,borderColor:'#ff4060',backgroundColor:'rgba(255,64,96,.06)',fill:true,borderWidth:2}]},options:lineOpts});
+  // v59Y (Ishan, 12 Nov): machine-wise view draws production and DT% as bars; floor-wise keeps the lines.
+  if (_mcPick) {
+    newChart('ch-tprod',{type:'bar',data:{labels,datasets:[{label:'Production',data:prods,backgroundColor:'rgba(0,212,255,.7)',borderRadius:3}]},options:lineOpts});
+    newChart('ch-tdt',{type:'bar',data:{labels,datasets:[{label:'DT%',data:dtPcts,backgroundColor:'rgba(255,64,96,.7)',borderRadius:3}]},options:lineOpts});
+  } else {
+    newChart('ch-tprod',{type:'line',data:{labels,datasets:[{label:'Production',data:prods,borderColor:'#00d4ff',backgroundColor:'rgba(0,212,255,.06)',fill:true,borderWidth:2}]},options:lineOpts});
+    newChart('ch-tdt',{type:'line',data:{labels,datasets:[{label:'DT%',data:dtPcts,borderColor:'#ff4060',backgroundColor:'rgba(255,64,96,.06)',fill:true,borderWidth:2}]},options:lineOpts});
+  }
   newChart('ch-teff',{type:'line',data:{labels,datasets:[{label:'Efficiency%',data:effs,borderColor:'#00e676',backgroundColor:'rgba(0,230,118,.06)',fill:true,borderWidth:2},{label:'Target 90%',data:dates.map(()=>90),borderColor:'rgba(255,171,0,.4)',borderDash:[4,4],borderWidth:1,pointRadius:0}]},options:{...lineOpts,plugins:{...lineOpts.plugins,legend:{display:true,labels:{color:'#7a8ba8',font:{size:10}}}}}});
   newChart('ch-trs',{type:'bar',data:{labels,datasets:[{label:'Re-Sort',data:resorts,backgroundColor:'rgba(255,171,0,.5)',borderRadius:2}]},options:chartOpts()});
 }
