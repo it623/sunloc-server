@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v59Y</title>
+<title>Sunloc Tracking Suite v1.0 · build v59Z</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -565,6 +565,7 @@ input[type=number]{font-family:var(--mono)}
 .gi-kpi-hover{position:relative;cursor:help}
 .gi-kpi-hover .gi-pm-pop{display:none;position:absolute;left:0;top:calc(100% + 4px);z-index:40;min-width:300px;background:var(--surface,#fff);border:1px solid var(--border,#d1d5db);border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:8px 10px;font-size:11px;color:var(--text,#111);text-align:left}
 .gi-kpi-hover:hover .gi-pm-pop{display:block}
+.gi-kpi-hover .gi-pm-pop.gi-pop-right{left:auto;right:0}
 .gi-pm-pop table{border-collapse:collapse;width:100%}
 .gi-pm-pop th{font-size:9px;letter-spacing:.5px;color:var(--text3,#6b7280);text-align:right;padding:2px 6px;border-bottom:1px solid var(--border,#d1d5db)}
 .gi-pm-pop th:first-child,.gi-pm-pop td:first-child{text-align:left}
@@ -603,7 +604,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v59Y</p>
+      <p>Tracking Suite v1.0 · build v59Z</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -634,7 +635,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v59Y</p>
+      <p>Tracking Suite v1.0 · build v59Z</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -11379,6 +11380,11 @@ async function _v39_repullFromSap() {
   await _v39_applyInvoiceFilters();
 }
 
+// v59Z (Ishan, 12 Nov): every month an inter-company invoice is raised on SUNIL HEALTHCARE itself to claim
+// IGST on office supplies — it is not a sale. An invoice is "SHL" when its customer (card name / code) is Sunil
+// Healthcare; "W/O SHL & IGST" is the ex-IGST amount of every other invoice.
+function _v59zIsShlInvoice(i) { return /SUNIL\s*HEALTH\s*CARE/i.test(String(i.customer || '') + ' ' + String(i.card_code || '')); }
+function _v59zExShlIgst(i) { return _v59zIsShlInvoice(i) ? 0 : _v59yExIgst(i); }
 // v59Y: amount excluding IGST on the current basis (NET scales by the invoice's net share of its total).
 function _v59yExIgst(i) { const tot = parseFloat(i.total_amount) || 0, ig = parseFloat(i.igst_amount) || 0; const base = Math.max(0, tot - ig); const fa = _v57yFig(i).amount; return tot > 0 ? base * (fa / tot) : base; }
 // v59Y: production-month split of a filtered invoice list — ONE working used by the KPI tooltips and by the
@@ -11390,11 +11396,11 @@ function _v59yPmSplit(invoices) {
   const out = {};
   for (const i of invoices) {
     const sp = i.pm_split || {}; const keys = Object.keys(sp);
-    const gq = parseFloat(i.total_qty_lakhs) || 0, gb = parseInt(i.total_boxes) || 0, fig = _v57yFig(i), amt = fig.amount, amtEx = _v59yExIgst(i);
+    const gq = parseFloat(i.total_qty_lakhs) || 0, gb = parseInt(i.total_boxes) || 0, fig = _v57yFig(i), amt = fig.amount, amtEx = _v59yExIgst(i), amtEx2 = _v59zExShlIgst(i), isShl = _v59zIsShlInvoice(i);
     const fq = gq > 0 ? fig.qty / gq : 1, fb = gb > 0 ? fig.boxes / gb : 1;
     const sq = keys.reduce((a, k) => a + (sp[k].qty || 0), 0);
     const slices = keys.length ? keys.map(k => ({ ym: k, qty: sp[k].qty || 0, boxes: sp[k].boxes || 0, share: sq > 0 ? (sp[k].qty || 0) / sq : 1 / keys.length })) : [{ ym: '—', qty: gq, boxes: gb, share: 1 }];
-    for (const x of slices) { const o = out[x.ym] = out[x.ym] || { qty: 0, boxes: 0, amount: 0, amountEx: 0, inv: new Set() }; o.qty += x.qty * fq; o.boxes += Math.round(x.boxes * fb); o.amount += amt * x.share; o.amountEx += amtEx * x.share; o.inv.add(i.id); }
+    for (const x of slices) { const o = out[x.ym] = out[x.ym] || { qty: 0, boxes: 0, amount: 0, amountEx: 0, amountEx2: 0, inv: new Set(), shl: new Set() }; o.qty += x.qty * fq; o.boxes += Math.round(x.boxes * fb); o.amount += amt * x.share; o.amountEx += amtEx * x.share; o.amountEx2 += amtEx2 * x.share; o.inv.add(i.id); if (isShl) o.shl.add(i.id); }
   }
   return out;
 }
@@ -11439,11 +11445,18 @@ function _v39_renderInvoiceTable() {
     const tq = parseFloat(i.total_qty_lakhs) || 0;
     return sum + (tq > 0 ? amt * ((parseFloat(i.pm.qty) || 0) / tq) : amt);
   }, 0);
+  const totalAmountEx2 = invoices.reduce((sum, i) => {
+    const amt = _v59zExShlIgst(i);
+    if (!i.pm || !i.pm.is_partial) return sum + amt;
+    const tq = parseFloat(i.total_qty_lakhs) || 0;
+    return sum + (tq > 0 ? amt * ((parseFloat(i.pm.qty) || 0) / tq) : amt);
+  }, 0);
+  const _shlN = invoices.filter(_v59zIsShlInvoice).length;
   const _pmSplit = _pmView ? {} : _v59yPmSplit(invoices);
   const _pmKeys = _v59yPmKeys(_pmSplit);
   const _inr = v => '₹' + Math.round(v).toLocaleString('en-IN');
   const _popBoxes = !_pmView && _pmKeys.length ? `<div class="gi-pm-pop"><div style="font-weight:700;margin-bottom:4px">By production month — ${_basisNet?'net':'gross'}, current filters</div><table><tr><th>Prod. month</th><th>Invoices</th><th>Boxes</th><th>Qty (L)</th></tr>${_pmKeys.map(k=>{const o=_pmSplit[k];return `<tr><td>${k==='—'?'<span style="color:var(--text3)">month unknown</span>':_v57yPmLabel(k)}</td><td>${o.inv.size}</td><td>${o.boxes.toLocaleString()}</td><td>${o.qty.toFixed(2)}</td></tr>`;}).join('')}<tr class="tot"><td>Total</td><td>${totalCount}</td><td>${totalBoxes.toLocaleString()}</td><td>${totalQty.toFixed(2)}</td></tr></table><div style="color:var(--text3);margin-top:4px">Multi-month invoices are split by their batch allocation; pick a month in “All prod. months” for the detailed working.</div></div>` : '';
-  const _popAmt = !_pmView && _pmKeys.length ? `<div class="gi-pm-pop" style="min-width:340px"><div style="font-weight:700;margin-bottom:4px">By production month — ${_basisNet?'net':'gross'}, current filters</div><table><tr><th>Prod. month</th><th>Qty (L)</th><th>Amount incl. IGST</th><th>Excl. IGST</th></tr>${_pmKeys.map(k=>{const o=_pmSplit[k];return `<tr><td>${k==='—'?'<span style="color:var(--text3)">month unknown</span>':_v57yPmLabel(k)}</td><td>${o.qty.toFixed(2)}</td><td>${_inr(o.amount)}</td><td>${_inr(o.amountEx)}</td></tr>`;}).join('')}<tr class="tot"><td>Total</td><td>${totalQty.toFixed(2)}</td><td>${_inr(totalAmount)}</td><td>${_inr(totalAmountEx)}</td></tr></table><div style="color:var(--text3);margin-top:4px">Amount of a multi-month invoice is pro-rated to each month by quantity share.</div></div>` : '';
+  const _popAmt = !_pmView && _pmKeys.length ? `<div class="gi-pm-pop gi-pop-right" style="min-width:420px"><div style="font-weight:700;margin-bottom:4px">By production month — ${_basisNet?'net':'gross'}, current filters</div><table><tr><th>Prod. month</th><th>Qty (L)</th><th>Total</th><th>W/O IGST</th><th>W/O SHL &amp; IGST</th></tr>${_pmKeys.map(k=>{const o=_pmSplit[k];return `<tr><td>${k==='—'?'<span style="color:var(--text3)">month unknown</span>':_v57yPmLabel(k)}</td><td>${o.qty.toFixed(2)}</td><td>${_inr(o.amount)}</td><td>${_inr(o.amountEx)}</td><td>${_inr(o.amountEx2)}</td></tr>`;}).join('')}<tr class="tot"><td>Total</td><td>${totalQty.toFixed(2)}</td><td>${_inr(totalAmount)}</td><td>${_inr(totalAmountEx)}</td><td>${_inr(totalAmountEx2)}</td></tr></table><div style="color:var(--text3);margin-top:4px">Amount of a multi-month invoice is pro-rated to each month by quantity share. W/O SHL = excluding inter-company invoices raised on Sunil Healthcare (IGST claim on office supplies, not sales) — ${_shlN} such invoice${_shlN===1?'':'s'} in this set.</div></div>` : '';
   const _allRows = _v39_invoiceList || [];
   const _cancelled = _allRows.filter(i => (i.inv_kind || 'invoice') === 'cancelled');
   const _returned = _allRows.filter(i => (parseFloat(i.cn_qty) || 0) > 0);
@@ -11532,7 +11545,8 @@ function _v39_renderInvoiceTable() {
       <div class="gi-kpi-hover" style="background:var(--surface2);padding:8px 10px;border-radius:4px;border-left:3px solid #ea580c">
         <div style="font-size:10px;color:var(--text3);letter-spacing:.5px">💰 TOTAL AMOUNT${_popAmt?' <span style="font-weight:400">· hover for month-wise</span>':''}</div>
         <div style="font-size:18px;font-weight:700">₹${totalAmount.toLocaleString('en-IN',{maximumFractionDigits:0})}</div>
-        <div style="font-size:11px;color:var(--text3)" title="Total amount less IGST (taxable value)">₹${totalAmountEx.toLocaleString('en-IN',{maximumFractionDigits:0})} excl. IGST</div>${_popAmt}
+        <div style="font-size:11px;color:var(--text3)" title="Total amount less IGST">₹${totalAmountEx.toLocaleString('en-IN',{maximumFractionDigits:0})} W/O IGST</div>
+        <div style="font-size:11px;color:var(--text3)" title="Total amount less IGST, excluding the inter-company invoices raised on Sunil Healthcare (${_shlN} in this set)">₹${totalAmountEx2.toLocaleString('en-IN',{maximumFractionDigits:0})} W/O SHL &amp; IGST</div>${_popAmt}
       </div>
     </div>
     <div style="overflow-x:auto;max-height:560px;overflow-y:auto">
@@ -11915,15 +11929,15 @@ function _v39_exportInvoicesCsv() {
   if (!_pmExp) {
     const sp = _v59yPmSplit(invoices), keys = _v59yPmKeys(sp);
     const M = [[{v:`BY PRODUCTION MONTH  ·  ${_basisNet?'NET of cancel & return':'GROSS (all invoices)'}  ·  all-months view, current filters  ·  exported ${today()}`,s:S.title}],[],
-      ['Production Month','Invoices','Boxes','Qty (L)','Amount incl. IGST (₹)','Amount excl. IGST (₹)'].map(h=>({v:h,s:S.hdr}))];
-    let mi=0,mb=0,mq=0,ma=0,me=0;
-    for (const k of keys) { const o = sp[k]; mi+=o.inv.size; mb+=o.boxes; mq+=o.qty; ma+=o.amount; me+=o.amountEx;
-      M.push([{v:k==='—'?'month unknown':_v57yPmLabel(k)+'  ('+k+')',s:S.mono},{v:o.inv.size,s:S.num},{v:o.boxes,s:S.num},{v:Math.round(o.qty*100)/100,s:S.num},{v:Math.round(o.amount),s:S.inr},{v:Math.round(o.amountEx),s:S.inr}]); }
-    M.push([{v:'TOTAL',s:S.tot},{v:invoices.length,s:{...S.tot,numFmt:'0'}},{v:mb,s:{...S.tot,numFmt:'#,##0'}},{v:Math.round(mq*100)/100,s:S.tot},{v:Math.round(ma),s:{...S.tot,numFmt:'#,##0'}},{v:Math.round(me),s:{...S.tot,numFmt:'#,##0'}}]);
-    M.push([]); M.push([{v:'Invoice count per month counts an invoice in every month it touches, so the column can exceed the TOTAL (which is distinct invoices). A multi-month invoice is split by its batch allocation; its amount is pro-rated by quantity share. Excl. IGST = amount less IGST.',s:{font:{italic:true,sz:9,color:{rgb:'555555'}}}}]);
+      ['Production Month','Invoices','Boxes','Qty (L)','Total (₹)','W/O IGST (₹)','W/O SHL & IGST (₹)'].map(h=>({v:h,s:S.hdr}))];
+    let mi=0,mb=0,mq=0,ma=0,me=0,me2=0; const mshl = new Set();
+    for (const k of keys) { const o = sp[k]; mi+=o.inv.size; mb+=o.boxes; mq+=o.qty; ma+=o.amount; me+=o.amountEx; me2+=o.amountEx2; o.shl.forEach(x=>mshl.add(x));
+      M.push([{v:k==='—'?'month unknown':_v57yPmLabel(k)+'  ('+k+')',s:S.mono},{v:o.inv.size,s:S.num},{v:o.boxes,s:S.num},{v:Math.round(o.qty*100)/100,s:S.num},{v:Math.round(o.amount),s:S.inr},{v:Math.round(o.amountEx),s:S.inr},{v:Math.round(o.amountEx2),s:S.inr}]); }
+    M.push([{v:'TOTAL',s:S.tot},{v:invoices.length,s:{...S.tot,numFmt:'0'}},{v:mb,s:{...S.tot,numFmt:'#,##0'}},{v:Math.round(mq*100)/100,s:S.tot},{v:Math.round(ma),s:{...S.tot,numFmt:'#,##0'}},{v:Math.round(me),s:{...S.tot,numFmt:'#,##0'}},{v:Math.round(me2),s:{...S.tot,numFmt:'#,##0'}}]);
+    M.push([]); M.push([{v:'Invoice count per month counts an invoice in every month it touches, so the column can exceed the TOTAL (which is distinct invoices). A multi-month invoice is split by its batch allocation; its amount is pro-rated by quantity share. W/O IGST = amount less IGST. W/O SHL & IGST = also excluding the inter-company invoices raised on Sunil Healthcare (IGST claim on office supplies, not sales) — '+mshl.size+' such invoice'+(mshl.size===1?'':'s')+' in this set.',s:{font:{italic:true,sz:9,color:{rgb:'555555'}}}}]);
     const mws = XLSX.utils.aoa_to_sheet(M);
-    mws['!cols']=[{wch:24},{wch:10},{wch:10},{wch:12},{wch:20},{wch:20}];
-    mws['!merges']=[{s:{r:0,c:0},e:{r:0,c:5}}];
+    mws['!cols']=[{wch:24},{wch:10},{wch:10},{wch:12},{wch:18},{wch:18},{wch:20}];
+    mws['!merges']=[{s:{r:0,c:0},e:{r:0,c:6}}];
     XLSX.utils.book_append_sheet(wb, mws, 'By Prod Month');
   }
   // v57Y: RECONCILIATION — gross → less cancelled → less returned → net, over the SAME filtered set

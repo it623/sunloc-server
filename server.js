@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v59Y';
+const APP_BUILD = 'v59Z';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -32357,12 +32357,12 @@ app.get('/api/gpr/material-issuance', async (req, res) => {
     const masters = await gprLoadMasters();
     const C = Object.assign({}, GPR_SEED_MASTERS.gpr_constants, masters.gpr_constants || {});
     const planYield = Number(req.query.yield || C.issuancePlanYieldPct || 105);
-    // v59X/v59Y (Ishan, 11–12 Nov): gelatine-to-issue is split into virgin + reuse (cutting / salvage / return
-    // solution). Reuse in a window = NET STOCK CONSUMPTION = consumed back − generated. If consumption ran ahead of
+    // v59X–v59Z (Ishan, 11–12 Nov): gelatine-to-issue is split into virgin + reuse (cutting / salvage / return
+    // solution). Reuse = NET STOCK CONSUMPTION per day = consumed/day − generated/day. If consumption ran ahead of
     // generation, that much virgin issued stayed unused and comes off the coming days' virgin; if generation ran
     // ahead, the leftover stock has to be consumed in the coming days and likewise comes off virgin. Either way the
-    // one-time adjustment = |consumed − generated| ÷ `spread` days (1 = all on the next day). `extra` = plant target
-    // of extra reuse consumption per day (kg/day) — a standing cut to virgin of the same size.
+    // adjustment/day = |net/day| ÷ `spread` days (1 = all on the next day); virgin = issue − adjustment − `extra`
+    // (plant target of extra reuse consumption per day, a standing cut to virgin of the same size).
     const extraKgPerDay = Math.max(0, Number(req.query.extra ?? C.issuanceExtraKgPerDay ?? 0) || 0);
     const spreadDays = Math.max(1, Math.round(Number(req.query.spread ?? C.issuanceSpreadDays ?? 1) || 1));
     // v58L item 5: DPR entries for a production day are complete 2 h after it turns (08:00 IST), so the
@@ -32400,9 +32400,12 @@ app.get('/api/gpr/material-issuance', async (req, res) => {
         // v59Y split (see the route comment)
         const genKg = f.genCutSalKg + f.genReturnKg, consKg = f.consCutSalKg + f.consReturnKg;
         const genPerDayKg = f.days > 0 ? genKg / f.days : 0, consPerDayKg = f.days > 0 ? consKg / f.days : 0;
-        const netStockKg = consKg - genKg;                                        // + drawn from stock · − added to stock
-        const adjustPerDayKg = Math.abs(netStockKg) / spreadDays;                 // one-time cut to virgin, either direction
-        const virginPerDayKg = Math.max(0, issueKg - genPerDayKg - adjustPerDayKg - extraKgPerDay);
+        // v59Z (Ishan, 12 Nov): everything on a per-day footing — net stock consumption/day = consumed/day − generated/day
+        // (+ drawn from stock · − added to stock); adjustment/day = |net/day| ÷ spread; virgin = gelatine to issue −
+        // adjustment − extra reuse target (generated/day is NOT deducted — the issue figure is the virgin requirement).
+        const netStockKg = consPerDayKg - genPerDayKg;
+        const adjustPerDayKg = Math.abs(netStockKg) / spreadDays;
+        const virginPerDayKg = Math.max(0, issueKg - adjustPerDayKg - extraKgPerDay);
         const r1 = v => +Number(v || 0).toFixed(1);
         return { floor: fl, packableKg: r1(f.packableKg), packableLakhs: +f.lakhs.toFixed(2), days: f.days, batches: f.batches.size,
                  packablePerDayKg: r1(perDay), issueKg: r1(issueKg),
