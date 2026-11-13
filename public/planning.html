@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v60A</p>
+      <p>Planning Suite v3.0 · build v60C</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -966,6 +966,7 @@ const SYNC = (() => {
             [..._dlJson.logs, ..._localDailyPrinting].forEach(l => { if (l.id && !_dlMap.has(l.id)) _dlMap.set(l.id, l); });
             state.dailyPrinting = [..._dlMap.values()];
             console.log('[DailyPrinting] Reloaded', _dlJson.logs.length, 'logs from dedicated table after server sync');
+            _dlRetryPending();   // v60C
           } else {
             state.dailyPrinting = _localDailyPrinting;
           }
@@ -2391,6 +2392,7 @@ async function loadFromKV() {
         state.dailyPrinting = [..._dlMergeMap.values()];
         _purgeDuplicateDailyPrinting(); // v41ZE #6: drop content-identical dupes so all calcs are clean
         console.log('[DailyPrinting] Loaded', j.logs.length, 'logs from server, state has', state.dailyPrinting.length);
+        _dlRetryPending();   // v60C: rows that never reached the server come back from localStorage and are re-pushed
       }
     }
 
@@ -2615,14 +2617,13 @@ async function saveState() {
             signal: AbortSignal.timeout(8000)
           }).catch(()=>{});
         }
-        // Daily printing → dedicated table
-        if (state.dailyPrinting?.length) {
-          fetch(_url + '/api/daily-printing/bulk', {
-            method:'POST', headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({ logs: state.dailyPrinting }),
-            signal: AbortSignal.timeout(8000)
-          }).catch(()=>{});
-        }
+        // Daily printing → dedicated table. v60C: only rows changed this session or still pending — the
+        // whole-history push (~1,900 rows, 8 s, errors swallowed) is what was losing Maan Singh's entries.
+        try {
+          const _dirty = (state.dailyPrinting || []).filter(l => l && l.id && window._dlDirty && window._dlDirty.has(l.id));
+          if (_dirty.length) _dlPush(_dirty, 25000).then(ok => { if (ok) _dirty.forEach(l => { window._dlDirty.delete(l.id); _dlPendingRemove([l.id]); }); else _dirty.forEach(_dlPendingAdd); });
+          _dlRetryPending();
+        } catch(_) {}
         // v52I (Ishan, 20 Aug): the ambient sync NO LONGER pushes pack sizes — the push that stood here
         // was removed. Master data must not ride on a background whole-state write: a tab opened before a
         // master change silently reverted it on its next sync (size 4 was corrected to 300000 and stomped
@@ -9603,7 +9604,12 @@ function renderDailyPrinting() {
   const totalSalvage = logs.reduce((s,l)=>s+(l.salvage||0),0);
   const salvagePct = totalPrinted>0?(totalSalvage/totalPrinted*100).toFixed(2):0;
 
+  const _pendIds = new Set(_dlPendingRead().map(l => l.id));   // v60C
+  const _pendBanner = _pendIds.size ? `<div class="alert" style="background:rgba(255,171,0,.12);border:1px solid rgba(255,171,0,.5);margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;gap:12px">
+      <div><strong>${_pendIds.size} entr${_pendIds.size===1?'y is':'ies are'} on this PC but not yet on the server.</strong> They will not appear in Tracking reports or on other PCs until they are. Keep this tab open; retry if the network is back.</div>
+      <button class="btn btn-primary btn-sm" onclick="_dlRetryPending().then(n=>{toast(n?('✅ '+n+' entr'+(n===1?'y':'ies')+' saved to server'):'⚠️ Still not reachable — will keep retrying','var(--accent3)',4000);render();})">Retry now</button></div>` : '';
   content.innerHTML = `
+    ${_pendBanner}
     <div class="kpi-grid">
       <div class="kpi" style="--kpi-color:var(--accent)"><div class="kpi-label">Log Days</div><div class="kpi-value">${logs.length}</div></div>
       <div class="kpi" style="--kpi-color:var(--accent2)"><div class="kpi-label">Total Printed (kg)</div><div class="kpi-value">${fmt(totalPrinted,0)}</div></div>
@@ -9705,8 +9711,8 @@ function renderDailyPrinting() {
               const batchCell = dlBatch
                 ? '<span class="text-accent">'+dlBatch+'</span>'
                 : (_pcOnly ? '<span style="color:var(--text3)" title="No batch linked — PC code shown">PC '+_pcOnly+'</span>' : '<span style="color:var(--text3)">—</span>');
-              return `<tr>
-                <td class="text-mono">${fmtDate(l.date)}</td>
+              return `<tr${_pendIds.has(l.id)?' style="background:rgba(255,171,0,.10)" title="Not yet saved to the server — pending"':''}>
+                <td class="text-mono">${fmtDate(l.date)}${_pendIds.has(l.id)?' <span style="font-size:9px;font-weight:700;color:#c77700;border:1px solid #c77700;border-radius:3px;padding:0 4px;vertical-align:middle">PENDING</span>':''}</td>
                 <td class="text-mono">${batchCell}</td>
                 <td class="text-mono text-accent">${l.machineId||'-'}</td>
                 <td class="text-mono">${l.size||'-'}</td>
@@ -9916,6 +9922,56 @@ function _dailyPrintingContentKey(l){
     l.totalOutput||0, l.salvage||0
   ].join('|');
 }
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// v60C (Maan Singh's mail, 12 Nov — "many Oct & Nov printing-log entries missing"): a Daily Printing Log
+// row used to reach the server ONLY through the ambient whole-state save — a fire-and-forget POST of EVERY
+// log ever made (~1,900 rows), 8-second timeout, errors swallowed — and the localStorage copy of state never
+// held dailyPrinting at all. So when that POST timed out (payload grew every month: 245 rows reached the
+// server in Jun, 106 in Oct, 2 in Nov) the entry lived only in that tab's memory and vanished on reload,
+// with nothing telling the user. Now:
+//   • each log is pushed on its own, awaited, the moment it is saved or edited (tiny payload, 25 s)
+//   • a push that fails is kept in localStorage (`sunloc_dl_pending`) and shown as PENDING on the page,
+//     and is retried on every load and every later save until the server confirms it
+//   • the ambient save pushes only pending/changed rows, never the whole history
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+const _DL_PENDING_KEY = 'sunloc_dl_pending';
+function _dlPendingRead(){ try { const a = JSON.parse(localStorage.getItem(_DL_PENDING_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch(_) { return []; } }
+function _dlPendingWrite(list){ try { localStorage.setItem(_DL_PENDING_KEY, JSON.stringify(list || [])); } catch(e) { console.warn('[DailyPrinting] pending store failed:', e?.message); } }
+function _dlPendingAdd(log){ if (!log || !log.id) return; const list = _dlPendingRead().filter(l => l.id !== log.id); list.push(log); _dlPendingWrite(list); }
+function _dlPendingRemove(ids){ const set = new Set(ids || []); _dlPendingWrite(_dlPendingRead().filter(l => !set.has(l.id))); }
+function _dlPendingCount(){ return _dlPendingRead().length; }
+// Push the given logs to the dedicated table and return true only when the server confirmed the write.
+async function _dlPush(logs, timeoutMs){
+  const _url = (typeof SYNC !== 'undefined' && SYNC._url) || localStorage.getItem('sunloc_server_url') || (typeof serverUrl !== 'undefined' ? serverUrl : '');
+  const list = (logs || []).filter(l => l && l.id);
+  if (!_url || !list.length) return false;
+  try {
+    const r = await fetch(_url + '/api/daily-printing/bulk', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ logs: list }), signal: AbortSignal.timeout(timeoutMs || 25000) });
+    const j = await r.json().catch(() => null);
+    return !!(r.ok && j && j.ok);
+  } catch(e) { console.warn('[DailyPrinting] push failed:', e?.message); return false; }
+}
+// Save one log durably: push it; on failure park it as pending and tell the user plainly.
+async function _dlSaveOne(log){
+  const ok = await _dlPush([log], 25000);
+  if (ok) { _dlPendingRemove([log.id]); return true; }
+  _dlPendingAdd(log);
+  try { toast('⚠️ Entry kept on this PC but NOT yet saved to the server — it will retry automatically; do not close this tab until the PENDING badge clears.', '#c77700', 9000); } catch(_) {}
+  return false;
+}
+// Retry everything pending (called on load and on each ambient save). Merges pending rows into state first
+// so a reload never hides them.
+async function _dlRetryPending(){
+  const pend = _dlPendingRead(); if (!pend.length) return 0;
+  state.dailyPrinting = state.dailyPrinting || [];
+  const byId = new Map(state.dailyPrinting.map(l => [l.id, l]));
+  pend.forEach(l => { if (!byId.has(l.id)) state.dailyPrinting.push(l); });
+  const ok = await _dlPush(pend, 25000);
+  if (ok) { _dlPendingRemove(pend.map(l => l.id)); console.log('[DailyPrinting] pending flushed:', pend.length); try { if (state.currentPage === 'daily-printing') render(); } catch(_) {} return pend.length; }
+  return 0;
+}
+window._dlDirty = window._dlDirty || new Set();   // ids changed this session, for the ambient save
+
 function _purgeDuplicateDailyPrinting(){
   const seen = new Set();
   const kept = [];
@@ -10011,6 +10067,10 @@ async function saveDailyLog() {
     }
   }
 
+  // v60C: this entry goes to the server now, on its own, and is parked as pending if that fails.
+  window._dlDirty.add(logEntry.id);
+  const _dlOk = await _dlSaveOne(logEntry);
+  if (_dlOk) { window._dlDirty.delete(logEntry.id); try { toast('✅ Printing log saved to server', 'var(--accent3)', 2500); } catch(_) {} }
   await saveState(); closeModal(); render();
   } finally {
     window._dlSaving = false;
@@ -10062,6 +10122,7 @@ async function deleteDailyLog(id){
   if (!confirm(`Delete this printing log?\n\n${fmtDate(l.date)} · ${l.machineId||'—'} · ${l.pcCode||l.printMatter||''}\nQty ${fmt(l.totalQtyLakhs||0,2)}L\n\nThis cannot be undone.`)) return;
   const poId = l.printOrderId;
   state.dailyPrinting = state.dailyPrinting.filter(x => x.id !== id);
+  try { _dlPendingRemove([id]); window._dlDirty && window._dlDirty.delete(id); } catch(_) {}   // v60C
   // v41ZE #5: remove from the dedicated server table too, else it returns on next load.
   if (serverUrl) {
     try { await fetch(serverUrl + '/api/daily-printing/' + encodeURIComponent(id), { method: 'DELETE' }); }

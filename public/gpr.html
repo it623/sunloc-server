@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v60A</title>
+<title>GPR · build v60C</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -421,8 +421,8 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v60A</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v60A</div>
+    <h1>GPR<span class="vpill">v60C</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v60C</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -442,7 +442,7 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v60A</span></div>
+  <div class="nbrand">GPR<span class="vpill">v60C</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <span style="display:inline-flex;align-items:center;gap:5px;margin-right:10px;padding:2px 6px;border:1px solid #3949ab;border-radius:6px;background:#232b6e" title="Production month — the month turns at 06:00 IST on the 1st (same rule as DPR, Tracking and Planning). Every list, picker and period view is scoped to this month's batch cohort; stock balances and pending receipts always show the live position.">
@@ -6674,29 +6674,44 @@ async function loadYieldDaily(){
   if(val('yd_to')) q.set('to', val('yd_to'));
   try{
     const d = await api('/api/gpr/yield-daily?' + q.toString());
-    // v55K item 15: per-floor snapshot — previous production day + month-to-date, on top.
+    // v55K item 15: per-floor snapshot on top. v60B (Ishan, 13 Nov): three distinct figures — previous
+    // completed production day · the SELECTED PERIOD (Σ output ÷ Σ material over the loaded range) · true
+    // MONTH-TO-DATE (1st of the "to" month → "to", fetched separately). Before v60B the "MTD" column was the
+    // range aggregate, so it equalled the day figure whenever one day was loaded.
     try{
       if(d.ok && Array.isArray(d.days) && d.days.length){
+        const _agg = (days) => { const o = {}; (days||[]).forEach(day=>(day.floors||[]).forEach(f=>{ const k=f.floor; o[k]=o[k]||{inKg:0,outKg:0}; o[k].inKg+=Number(f.denominatorKg||0); o[k].outKg+=Number(f.numeratorKg||0); })); return o; };
         const flAgg = {};
         d.days.forEach(day=>(day.floors||[]).forEach(f=>{
-          const k = f.floor; flAgg[k] = flAgg[k]||{mtdIn:0, mtdOut:0, last:null};
-          flAgg[k].mtdIn += Number(f.denominatorKg||0); flAgg[k].mtdOut += Number(f.numeratorKg||0);   // real daily fields: numeratorKg/denominatorKg
+          const k = f.floor; flAgg[k] = flAgg[k]||{last:null};
           // v57E: days arrive newest first — "prev day" is the latest COMPLETED production day
-          // (the old loop kept overwriting and ended on the OLDEST day of the range)
           if(!flAgg[k].last && day.day !== productionDay()){ flAgg[k].last = f; flAgg[k].lastDay = day.day; }
           if(!flAgg[k].anyDay){ flAgg[k].anyDay = day.day; flAgg[k].anyF = f; }
         }));
+        const period = _agg(d.days);
+        const _pf = val('yd_from') || d.from, _pt = val('yd_to') || productionDay();
+        const _mStart = String(_pt).slice(0,8)+'01';
+        let mtd = null;
+        try {
+          if (_pf === _mStart && _pt === (val('yd_to') || productionDay())) mtd = period;      // the loaded range IS month-to-date
+          else { const m = await api('/api/gpr/yield-daily?from='+encodeURIComponent(_mStart)+'&to='+encodeURIComponent(_pt)); if (m && m.ok) mtd = _agg(m.days); }
+        } catch(_m) { mtd = null; }
+        const multi = _pf !== _pt;
+        const pct = (o,k) => { const a = o && o[k]; return a && a.inKg>0 ? a.outKg/a.inKg*100 : null; };
         const el2 = document.getElementById('ydSummary');
         if(el2){
-          const _pf = val('yd_from'), _pt = val('yd_to') || productionDay();   // v58U: the whole selected range, one click
-          el2.innerHTML = '<table class="gtable"><thead><tr><th>Floor</th><th class="num">Prev day yield %</th><th class="num">MTD yield %</th>'+(_pf && _pf!==_pt ? '<th>Period</th>' : '')+'</tr></thead><tbody>'
+          el2.innerHTML = '<table class="gtable"><thead><tr><th>Floor</th><th class="num">Prev day yield %</th>'
+            + (multi ? '<th class="num" title="Σ output ÷ Σ material over the loaded range">Period yield % <span style="font-weight:400;color:var(--t3)">'+esc(_dm(_pf))+' → '+esc(_dm(_pt))+'</span></th>' : '')
+            + '<th class="num" title="Σ output ÷ Σ material from the 1st of the month to the end of the loaded range">MTD yield % <span style="font-weight:400;color:var(--t3)">'+esc(_dm(_mStart))+' → '+esc(_dm(_pt))+'</span></th>'
+            + (multi ? '<th>Period</th>' : '')+'</tr></thead><tbody>'
             + Object.keys(flAgg).sort((a,b)=>(({GF:0,'1F':1,'2F':2})[a]??9)-(({GF:0,'1F':1,'2F':2})[b]??9)).map(k=>{   // v58H item 6: Ground → First → Second
                 const a = flAgg[k];
                 if(!a.last){ a.last = a.anyF; a.lastDay = a.anyDay; }
-                const prev = a.last ? a.last.yieldPct : null;
-                const mtd = a.mtdIn>0 ? a.mtdOut/a.mtdIn*100 : null;
-                return '<tr class="clickable" style="cursor:pointer" title="Show the working for the latest day" onclick="yieldWorking(\''+esc(a.lastDay)+'\',\''+esc(k)+'\')"><td><b>'+esc(FLOOR_LABELS[k]||k)+'</b> <span style="font-size:10.5px;color:var(--accent)">working &rsaquo;</span></td><td class="num mono">'+(prev==null?'—':fmt(prev,1)+'%')+'</td><td class="num mono">'+(mtd==null?'—':fmt(mtd,1)+'%')+'</td>'
-                  + (_pf && _pf!==_pt ? '<td><a href="javascript:void(0)" style="font-size:11px" onclick="event.stopPropagation();floorWorking(\''+esc(k)+'\',\''+esc(_pf)+'\',\''+esc(_pt)+'\')">'+esc(_dm(_pf))+' → '+esc(_dm(_pt))+' working &rsaquo;</a></td>' : '')+'</tr>';
+                const prev = a.last ? a.last.yieldPct : null, per = pct(period,k), mt = mtd ? pct(mtd,k) : null;
+                const cell = v => '<td class="num mono" style="color:'+(v==null?'var(--t3)':(yCls(v,d.target)==='green'?'var(--green)':yCls(v,d.target)==='red'?'var(--red)':'var(--t1)'))+'">'+(v==null?'—':fmt(v,1)+'%')+'</td>';
+                return '<tr class="clickable" style="cursor:pointer" title="Show the working for the latest day" onclick="yieldWorking(\''+esc(a.lastDay)+'\',\''+esc(k)+'\')"><td><b>'+esc(FLOOR_LABELS[k]||k)+'</b> <span style="font-size:10.5px;color:var(--accent)">working &rsaquo;</span></td>'
+                  + cell(prev) + (multi ? cell(per) : '') + (mtd ? cell(mt) : '<td class="num mono" style="color:var(--t3)" title="month-to-date could not be loaded">—</td>')
+                  + (multi ? '<td><a href="javascript:void(0)" style="font-size:11px" onclick="event.stopPropagation();floorWorking(\''+esc(k)+'\',\''+esc(_pf)+'\',\''+esc(_pt)+'\')">'+esc(_dm(_pf))+' → '+esc(_dm(_pt))+' working &rsaquo;</a></td>' : '')+'</tr>';
               }).join('') + '</tbody></table>';
         }
       }
