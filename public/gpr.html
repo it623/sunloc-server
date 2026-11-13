@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v59Z</title>
+<title>GPR · build v60A</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -421,8 +421,8 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v59Z</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v59Z</div>
+    <h1>GPR<span class="vpill">v60A</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v60A</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -442,7 +442,7 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v59Z</span></div>
+  <div class="nbrand">GPR<span class="vpill">v60A</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <span style="display:inline-flex;align-items:center;gap:5px;margin-right:10px;padding:2px 6px;border:1px solid #3949ab;border-radius:6px;background:#232b6e" title="Production month — the month turns at 06:00 IST on the 1st (same rule as DPR, Tracking and Planning). Every list, picker and period view is scoped to this month's batch cohort; stock balances and pending receipts always show the live position.">
@@ -1056,7 +1056,7 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
       </div>
 
       <div id="yieldIssuePane" style="display:none">
-        <div class="card-sub" style="margin-bottom:8px">Gelatine to issue for the <b>next production day</b>, floor-wise, on three bases: yesterday, the last 7 days and the month to date. Packable production = machine-wise DPR lakhs × the batch's packable share (packed + WIP × A-grade, over gross) × the batch's label weight &mdash; the same working as Daily by floor; gelatine to issue = packable kg per day &divide; the planning yield. <b>Split:</b> the issue is virgin + reuse (cutting / salvage / return solution). Reuse = net stock consumption per day (consumed − generated); whichever way it runs, the imbalance is taken off virgin once, on the next day or spread over the chosen days, and an extra reuse target cuts virgin by that much every day. Virgin to issue = gelatine to issue − adjustment − extra.</div>
+        <div class="card-sub" style="margin-bottom:8px">Gelatine to issue for the <b>next production day</b>, floor-wise, on three bases: yesterday, the last 7 days and the month to date. Packable production = machine-wise DPR lakhs × the batch's packable share (packed + WIP × A-grade, over gross) × the batch's label weight &mdash; the same working as Daily by floor; gelatine to issue = packable kg per day &divide; the planning yield. <b>Split:</b> the issue is virgin + reuse (cutting / salvage / return solution). Reuse = net stock consumption per day (consumed − generated); whichever way it runs, the imbalance is taken off virgin once, on the next day or spread over the chosen days, and the plant extra reuse target is apportioned across floors by virgin share and cut from virgin every day. Virgin to issue = gelatine to issue − adjustment − extra.</div>
         <div class="fgrid" style="margin-bottom:10px">
           <div class="field-grp"><label>Planning yield %</label><input id="mi_yield" type="number" step="0.5" value="105" onchange="loadMaterialIssuance()"></div>
           <div class="field-grp"><label>Extra reuse target kg/day</label><input id="mi_extra" type="number" step="5" min="0" value="0" onchange="loadMaterialIssuance()"></div>
@@ -6217,30 +6217,30 @@ async function loadMaterialIssuance(){
     // v59Y: KPI subs are plain text (kpi() escapes HTML)
     let h = '<div class="kgrid">'
       + K.map(([k,l])=>{ const t = S(k,'issueKg'), v = S(k,'virginPerDayKg'), g = S(k,'genPerDayKg'), adj = S(k,'adjustPerDayKg');
-          return kpi('Issue tomorrow — '+l+' basis', fmt(t,0)+' kg', k==='last7'?'amber':'', 'Virgin '+fmt(v,0)+' kg · generated '+fmt(g,0)+'/day'+(adj>0?' · adjustment −'+fmt(adj,0):'')+(ex>0?' · extra reuse −'+fmt(ex,0):'')); }).join('')
+          return kpi('Issue tomorrow — '+l+' basis', fmt(t,0)+' kg', k==='last7'?'amber':'', 'Virgin '+fmt(v,0)+' kg · generated '+fmt(g,0)+'/day'+(adj>0?' · adjustment −'+fmt(adj,0):'')+(ex>0?' · extra reuse −'+fmt(S(k,'extraKgPerDay'),0):'')); }).join('')
       + '</div>';
     // v59Y: one compact table per window — floors as rows; no day/batch annotations in the cells
     const TH = '<th>Floor</th><th class="num" title="packable kg ÷ production days in the window">Packable kg/day</th><th class="num" title="packable kg per day ÷ planning yield — virgin + reuse">Gelatine to issue</th>'
       + '<th class="num" title="cutting / salvage + return solution generated in the window ÷ days — the reuse that must be consumed back each day">Generated /day</th><th class="num" title="cutting / salvage + return solution actually consumed into tanks ÷ days">Consumed /day</th>'
       + '<th class="num" title="consumed/day − generated/day: + drawn from stock (that much virgin stayed unused) · − added to stock (to be consumed in the coming days)">Net stock consumption /day</th>'
       + '<th class="num" title="|net stock consumption per day| ÷ days chosen in “Take the reduction” — one-time cut to virgin">Adjustment /day</th>'
-      + (ex>0 ? '<th class="num" title="extra reuse target — standing cut to virgin">Extra reuse /day</th>' : '')
+      + (ex>0 ? '<th class="num" title="the plant extra reuse target ('+fmt(ex,0)+' kg/day) apportioned to this floor by its share of virgin, rounded up to the next kg; the last floor takes the remainder so floors sum to the target">Extra reuse /day</th>' : '')
       + '<th class="num" title="gelatine to issue − adjustment − extra reuse (never below 0)">Virgin to issue</th>';
     const net = v => v===0 ? '0' : (v>0?'+':'−')+fmt(Math.abs(v),0);
     const cell = (r) => '<td class="num">'+fmt(r.packablePerDayKg,0)+'</td><td class="num">'+fmt(r.issueKg,0)+'</td><td class="num">'+fmt(r.genPerDayKg,0)+'</td><td class="num">'+fmt(r.consPerDayKg,0)+'</td>'
       + '<td class="num" style="color:'+(r.netStockKg>0?'var(--amber)':r.netStockKg<0?'var(--teal)':'var(--t3)')+'">'+net(r.netStockKg)+'</td>'
       + '<td class="num" style="color:'+(r.adjustPerDayKg>0?'var(--amber)':'var(--t3)')+'">'+(r.adjustPerDayKg>0?'−'+fmt(r.adjustPerDayKg,0):'—')+'</td>'
-      + (ex>0 ? '<td class="num" style="color:var(--amber)">−'+fmt(ex,0)+'</td>' : '')
+      + (ex>0 ? '<td class="num" style="color:'+(r.extraKgPerDay>0?'var(--amber)':'var(--t3)')+'">'+(r.extraKgPerDay>0?'−'+fmt(r.extraKgPerDay,0):'—')+'</td>' : '')
       + '<td class="num" style="color:var(--teal)"><b>'+fmt(r.virginPerDayKg,0)+'</b></td>';
     K.forEach(([k,l])=>{
       const w = W[k]||{}; const days = Math.max(...floors.map(f=>rowOf(k,f).days||0), 0);
       h += '<div style="margin-top:10px;font-family:var(--fc);font-size:11px;letter-spacing:.5px;color:var(--t2)"><b>'+esc(l.toUpperCase())+'</b> &nbsp;'+esc(_dm(w.from))+(w.from!==w.to?' → '+esc(_dm(w.to)):'')+(days?' · '+days+' production day'+(days===1?'':'s'):'')+'</div>';
       h += '<div class="tswrap" style="max-height:none;margin-top:4px"><table class="gtable" style="font-size:12px"><thead><tr>'+TH+'</tr></thead><tbody>';
       floors.forEach(f=>{ h += '<tr><td><b>'+esc(FLOOR_LABELS[f]||f)+'</b></td>'+cell(rowOf(k,f))+'</tr>'; });
-      h += '<tr style="background:var(--s3);font-weight:700"><td>TOTAL</td>'+cell({ packablePerDayKg:S(k,'packablePerDayKg'), issueKg:S(k,'issueKg'), genPerDayKg:S(k,'genPerDayKg'), consPerDayKg:S(k,'consPerDayKg'), netStockKg:S(k,'netStockKg'), adjustPerDayKg:S(k,'adjustPerDayKg'), virginPerDayKg:S(k,'virginPerDayKg') })+'</tr>';
+      h += '<tr style="background:var(--s3);font-weight:700"><td>TOTAL</td>'+cell({ packablePerDayKg:S(k,'packablePerDayKg'), issueKg:S(k,'issueKg'), genPerDayKg:S(k,'genPerDayKg'), consPerDayKg:S(k,'consPerDayKg'), netStockKg:S(k,'netStockKg'), adjustPerDayKg:S(k,'adjustPerDayKg'), extraKgPerDay:S(k,'extraKgPerDay'), virginPerDayKg:S(k,'virginPerDayKg') })+'</tr>';
       h += '</tbody></table></div>';
     });
-    h += '<div class="hint" style="margin-top:8px">For production day <b>'+esc(_dm(d.forDay))+'</b>; basis ends '+esc(_dm(d.basisEndsOn))+' (the last completed production day). Gelatine to issue = packable kg/day &divide; '+d.planYieldPct+'%. Net stock consumption /day = consumed/day − generated/day: <b>+</b> means more reuse stock went into production than was generated, so that much virgin stayed unused; <b>−</b> means stock built up and has to be consumed in the coming days. Either way the adjustment = that amount &divide; '+d.spreadDays+' day'+(d.spreadDays===1?'':'s')+' ('+esc(spreadTxt)+'), a one-time cut to virgin that clears once the stock is level. Extra reuse target '+fmt(ex,0)+' kg/day is a standing cut to virgin of the same size. <b>Virgin to issue = gelatine to issue − adjustment − extra</b> (never below 0). Generation counts accepted and pending cutting / salvage and recovered return solution; expected WIP salvage is not counted until it is actually generated.</div>'
+    h += '<div class="hint" style="margin-top:8px">For production day <b>'+esc(_dm(d.forDay))+'</b>; basis ends '+esc(_dm(d.basisEndsOn))+' (the last completed production day). Gelatine to issue = packable kg/day &divide; '+d.planYieldPct+'%. Net stock consumption /day = consumed/day − generated/day: <b>+</b> means more reuse stock went into production than was generated, so that much virgin stayed unused; <b>−</b> means stock built up and has to be consumed in the coming days. Either way the adjustment = that amount &divide; '+d.spreadDays+' day'+(d.spreadDays===1?'':'s')+' ('+esc(spreadTxt)+'), a one-time cut to virgin that clears once the stock is level. Extra reuse target '+fmt(ex,0)+' kg/day is a plant figure: it is apportioned across the floors by each floor\u2019s share of virgin (rounded up to the next kg, last floor takes the remainder) and cut from that floor\u2019s virgin every day. <b>Virgin to issue = gelatine to issue − adjustment − extra</b> (never below 0). Generation counts accepted and pending cutting / salvage and recovered return solution; expected WIP salvage is not counted until it is actually generated.</div>'
     out.innerHTML = h;
   }catch(e){ out.innerHTML = '<div class="empty">Could not compute the issuance.</div>'; }
 }

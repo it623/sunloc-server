@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v59Z';
+const APP_BUILD = 'v60A';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -32362,7 +32362,7 @@ app.get('/api/gpr/material-issuance', async (req, res) => {
     // generation, that much virgin issued stayed unused and comes off the coming days' virgin; if generation ran
     // ahead, the leftover stock has to be consumed in the coming days and likewise comes off virgin. Either way the
     // adjustment/day = |net/day| ÷ `spread` days (1 = all on the next day); virgin = issue − adjustment − `extra`
-    // (plant target of extra reuse consumption per day, a standing cut to virgin of the same size).
+    // (plant target of extra reuse consumption per day, a standing cut to virgin of the same size, apportioned across floors by virgin share — see below).
     const extraKgPerDay = Math.max(0, Number(req.query.extra ?? C.issuanceExtraKgPerDay ?? 0) || 0);
     const spreadDays = Math.max(1, Math.round(Number(req.query.spread ?? C.issuanceSpreadDays ?? 1) || 1));
     // v58L item 5: DPR entries for a production day are complete 2 h after it turns (08:00 IST), so the
@@ -32405,19 +32405,35 @@ app.get('/api/gpr/material-issuance', async (req, res) => {
         // adjustment − extra reuse target (generated/day is NOT deducted — the issue figure is the virgin requirement).
         const netStockKg = consPerDayKg - genPerDayKg;
         const adjustPerDayKg = Math.abs(netStockKg) / spreadDays;
-        const virginPerDayKg = Math.max(0, issueKg - adjustPerDayKg - extraKgPerDay);
+        const virginBeforeExtraKg = Math.max(0, issueKg - adjustPerDayKg);     // v60A: extra is apportioned across floors below
+        const virginPerDayKg = virginBeforeExtraKg;
         const r1 = v => +Number(v || 0).toFixed(1);
         return { floor: fl, packableKg: r1(f.packableKg), packableLakhs: +f.lakhs.toFixed(2), days: f.days, batches: f.batches.size,
                  packablePerDayKg: r1(perDay), issueKg: r1(issueKg),
                  generatedKg: r1(genKg), generatedCutSalKg: r1(f.genCutSalKg), generatedReturnKg: r1(f.genReturnKg),
                  consumedKg: r1(consKg), consumedCutSalKg: r1(f.consCutSalKg), consumedReturnKg: r1(f.consReturnKg),
                  genPerDayKg: r1(genPerDayKg), consPerDayKg: r1(consPerDayKg), netStockKg: r1(netStockKg),
-                 adjustPerDayKg: r1(adjustPerDayKg), extraKgPerDay: r1(extraKgPerDay), spreadDays, virginPerDayKg: r1(virginPerDayKg) };
+                 adjustPerDayKg: r1(adjustPerDayKg), extraKgPerDay: 0, spreadDays, virginBeforeExtraKg: r1(virginBeforeExtraKg), virginPerDayKg: r1(virginPerDayKg) };
       });
+      // v60A (Ishan, 12 Nov): the extra reuse target is a PLANT figure, not per floor. Apportion it across the floors
+      // by each floor's share of virgin (before extra), rounding each floor UP to the next whole kg in floor order,
+      // with the last floor taking whatever remains so the floors sum exactly to the target (10 kg: 50 % → 5,
+      // 20 % → 2, remainder 3 → last floor). Floors with no virgin requirement take none.
+      if (extraKgPerDay > 0) {
+        const vTot = rows.reduce((x, r) => x + r.virginBeforeExtraKg, 0);
+        const live = rows.filter(r => r.virginBeforeExtraKg > 0);
+        let left = extraKgPerDay;
+        live.forEach((r, idx) => {
+          let share = idx === live.length - 1 ? left : Math.min(left, Math.ceil(extraKgPerDay * r.virginBeforeExtraKg / vTot - 1e-9));
+          share = Math.max(0, share);
+          r.extraKgPerDay = +share.toFixed(1); left = Math.max(0, left - share);
+          r.virginPerDayKg = +Math.max(0, r.virginBeforeExtraKg - share).toFixed(1);
+        });
+      }
       const sum = key => +rows.reduce((x, r) => x + (r[key] || 0), 0).toFixed(1);
       out[k] = { from: a, to: b, rows, totalIssueKg: sum('issueKg'), totalPackablePerDayKg: sum('packablePerDayKg'),
                  totalVirginPerDayKg: sum('virginPerDayKg'), totalGenPerDayKg: sum('genPerDayKg'), totalConsPerDayKg: sum('consPerDayKg'),
-                 totalAdjustPerDayKg: sum('adjustPerDayKg'), totalGeneratedKg: sum('generatedKg'), totalConsumedKg: sum('consumedKg'), totalNetStockKg: sum('netStockKg') };
+                 totalAdjustPerDayKg: sum('adjustPerDayKg'), totalExtraKgPerDay: sum('extraKgPerDay'), totalGeneratedKg: sum('generatedKg'), totalConsumedKg: sum('consumedKg'), totalNetStockKg: sum('netStockKg') };
     });
     res.json({ ok: true, forDay: dayShift(today, 1), today, basisEndsOn: yday, planYieldPct: planYield, graceHours: graceH, extraKgPerDay, spreadDays, windows: out });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
