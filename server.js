@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v60C';
+const APP_BUILD = 'v60D';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -13884,9 +13884,31 @@ app.post('/api/print-orders/bulk', async (req, res) => {
         await pgPool.query('DELETE FROM print_orders WHERE id = ANY($1)', [[..._tomb51zl]]);
       }
     } catch (e) { /* tombstone table may not exist on first boot — proceed without filter */ }
+    // v60D (Maan Singh, 14 Nov — Nov print orders "reversed to unassigned" after re-entering printing logs):
+    // the ambient save pushes a client's WHOLE print-order list, so a tab opened before the assignments
+    // were made (or one kept open for days) wrote machine_id = null over live assignments. A machine is
+    // now taken away ONLY when the row says so explicitly (_unassign: true, set by the edit modal when the
+    // user picks "Unassigned"); any other null arriving over a stored machine keeps the stored machine,
+    // start and end dates, and is logged.
+    let _assignGuard = {};
+    try {
+      const _ids2 = printOrders.map(p => p && p.id).filter(Boolean);
+      if (_ids2.length) {
+        const _st = await pgPool.query('SELECT id, machine_id, start_date, end_date FROM print_orders WHERE id = ANY($1) AND machine_id IS NOT NULL AND machine_id <> \'\' AND machine_id <> \'null\'', [_ids2]);
+        _st.rows.forEach(r => { _assignGuard[r.id] = r; });
+      }
+    } catch (e) { _assignGuard = {}; }
+    const _nullish = v => (v == null || v === '' || v === 'null');
+    let _guardKept = 0;
     for (const p of printOrders) {
       if (!p.id) continue;
       if (_tomb51zl.has(p.id)) continue;   // v51ZL: dead by decree — skip the upsert
+      if (_nullish(p.machineId) && _assignGuard[p.id] && p._unassign !== true) {
+        const g = _assignGuard[p.id];
+        p.machineId = g.machine_id; if (_nullish(p.startDate)) p.startDate = g.start_date; if (_nullish(p.endDate)) p.endDate = g.end_date;
+        _guardKept++;
+        console.log(`[v60D ASSIGN-GUARD] kept ${g.machine_id} on ${p.batchNumber || p.id} — client sent null without _unassign | build=${req.get('X-Sunloc-Build') || '-'}`);
+      }
       await pgPool.query(`
         INSERT INTO print_orders (id,machine_id,customer,batch_number,pc_code,size,colour,
           print_matter,print_type,qty_to_print,order_qty,printed_to_date,printed_to_date_manual,
@@ -13902,7 +13924,7 @@ app.post('/api/print-orders/bulk', async (req, res) => {
           p.startDate||null,p.endDate||null,p.status||'pending',p.zone||null,
           p.remarks||null,p.productionOrderId||null]);
     }
-    res.json({ ok: true, count: printOrders.length, savedAt: new Date().toISOString() });
+    res.json({ ok: true, count: printOrders.length, assignGuardKept: _guardKept, savedAt: new Date().toISOString() });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 

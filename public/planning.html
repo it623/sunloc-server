@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v60C</p>
+      <p>Planning Suite v3.0 · build v60D</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -9380,10 +9380,14 @@ async function savePrintModal(existingId) {
     const _pld50u = (s) => { const m = String(s||'').match(/^(\d{4})-(\d{2})-(\d{2})$/); return m ? new Date(+m[1], +m[2]-1, +m[3]) : new Date(s); };
     const startDate = _pld50u(document.getElementById('fp-startdate')?.value || today());   // v50U: local midnight
     const endDate = pm && qty ? calcEndDate(startDate, qty/pm.cap) : null;
+    const _prevPo60d = existingId ? state.printOrders.find(p=>p.id===existingId) : null;   // v60D
     const ord = {
       id: existingId || uid(),
       productionOrderId: existingId ? state.printOrders.find(p=>p.id===existingId)?.productionOrderId : null,
       machineId: machineId || null,
+      // v60D: an explicit "Unassigned" choice on an order that HAD a machine is the only thing allowed to clear
+      // the machine on the server (see /api/print-orders/bulk assign-guard); stale tabs can no longer do it.
+      _unassign: !machineId && !!(_prevPo60d && _prevPo60d.machineId) ? true : undefined,
       customer: document.getElementById('fp-customer')?.value,
       batchNumber: _effBatch,
       // v41z2: pcCode always from linked production order — never from form (prevents mismatch)

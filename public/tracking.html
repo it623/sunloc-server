@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v60C</title>
+<title>Sunloc Tracking Suite v1.0 · build v60D</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -604,7 +604,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v60C</p>
+      <p>Tracking Suite v1.0 · build v60D</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -635,7 +635,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v60C</p>
+      <p>Tracking Suite v1.0 · build v60D</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -12485,9 +12485,16 @@ function renderBatchDetail(batch){
     ${_orangeList45.length>0?`<span style="background:rgba(234,88,12,0.12);border:1px solid var(--orange);border-radius:4px;padding:4px 10px;font-size:12px;font-family:var(--mono);color:var(--orange)" title="Orange rework labels for this batch — counted separately from the white boxes above">🟠 Orange Rework: <strong>${_orangeList45.length}</strong></span>`:''}
     ${_dupIds45y.size>0?`<span style="background:rgba(255,64,96,0.1);border:1px solid rgba(255,64,96,0.35);border-radius:4px;padding:4px 10px;font-size:12px;font-family:var(--mono);color:#ff4060" title="Same label number generated more than once (non-voided). ${labels.filter(l=>!l.voided).length - _dupIds45y.size} unique of ${labels.filter(l=>!l.voided).length}">⚠ Duplicates: <strong>${_dupIds45y.size}</strong></span>`:''}
   </div>
+  <div style="font-size:11px;color:var(--text3);margin:-4px 0 8px;display:flex;gap:14px;flex-wrap:wrap;align-items:center">
+    <span><span style="display:inline-block;padding:0 6px;border-radius:6px;font-weight:700;color:#6b7280;background:var(--surface3)">✓</span> left this department (hover for date &amp; time)</span>
+    <span><span style="display:inline-block;padding:0 6px;border-radius:6px;font-weight:700;color:#9ca3af;border:1px dashed #c7cdd6">✓</span> left — no scan on record, implied</span>
+    <span><span style="display:inline-block;padding:0 6px;border-radius:6px;font-weight:700;color:#1d4ed8;background:rgba(37,99,235,.12);border:1px solid rgba(37,99,235,.35)">IN</span> currently here</span>
+    <span><span style="display:inline-block;padding:0 6px;border-radius:6px;font-weight:700;color:#fff;background:#f59e0b">✓</span> admin override</span>
+    <span><span style="display:inline-block;padding:0 6px;border-radius:6px;font-weight:700;color:#047857;background:rgba(0,230,118,.18);border:1px solid rgba(0,230,118,.5)">✓</span> dispatched</span>
+  </div>
   <div class="tbl-wrap"><table>
     <thead><tr><th>Label #</th><th>Qty (L)</th><th>Status</th><th>Current Stage</th>
-    ${flow.map(d=>`<th>${DEPT_LABELS[d]||d}</th>`).join('')}
+    ${flow.map(d=>`<th style="text-align:center">${DEPT_LABELS[d]||d}</th>`).join('')}
     <th>Alerts</th></tr></thead>
     <tbody>
     ${labels.map(l=>{
@@ -12519,21 +12526,33 @@ function renderBatchDetail(batch){
         <td>${statusBadge}</td>
         <td><span class="badge ${stageColor}">${DEPT_LABELS[stage]||stage}</span></td>
         ${flow.map((dept,_di)=>{
-          // v45ZE (confirmed by Ishan): three-state trail — solid green/blue = genuine scan,
-          // AMBER = scan pushed through by ADMIN OVERRIDE (flag persisted from this build on;
-          // older overrides predate the flag and render solid), muted = no record, inferred.
+          // v60D (Vipin's query, Ishan's ruling 14 Nov): one simple, aligned trail —
+          //   grey ✓   = box has LEFT this department (tooltip: OUT time · operator, or "implied" when no scan is on record)
+          //   blue IN  = box is IN this department now (tooltip: IN time)
+          //   amber    = that scan was pushed through by ADMIN OVERRIDE
+          //   green ✓  = only in the Dispatch column, when the box has physically shipped
+          //   —        = not reached yet
           const _inS=scans.find(sc=>sc.dept===dept&&sc.type==='in');
           const _outS=scans.find(sc=>sc.dept===dept&&sc.type==='out');
           const _ov45=s=>!!(s&&(Number(s.is_admin_override)===1||s.adminOverride===true||s._adminOverride===true));
-          if(_outS){
-            if(_ov45(_outS)) return `<td class="td-mono text-sm"><span style="background:#f59e0b;color:#fff;font-weight:700;padding:1px 6px;border-radius:6px" title="OUT via ADMIN OVERRIDE: ${fmtDateTime(_outS.ts)}${_outS.operator?' · '+_v40_esc(_outS.operator):''}">✓</span></td>`;
-            return `<td class="td-mono text-sm"><span class="badge badge-green" title="OUT: ${fmtDateTime(_outS.ts)}">✓</span></td>`;
+          const _who=s=>s&&s.operator?' · '+_v40_esc(s.operator):'';
+          const _cell=(inner,title,style)=>`<td class="td-mono text-sm" style="text-align:center;white-space:nowrap"><span style="display:inline-block;min-width:28px;text-align:center;padding:1px 6px;border-radius:6px;font-weight:700;${style}" title="${title}">${inner}</span></td>`;
+          const _left = _stageIdx45 > _di;                       // box is already downstream of this department
+          const _here = _stageIdx45 === _di && dept !== 'dispatch';
+          if (dept === 'dispatch') {
+            if (stage === 'dispatched') return _cell('✓', `Dispatched (shipped)${_outS?': '+fmtDateTime(_outS.ts)+_who(_outS):''}`, 'background:rgba(0,230,118,.18);color:#047857;border:1px solid rgba(0,230,118,.5)');
+            if (stage === 'at_dispatch') return _cell('AT', `At Dispatch — packed out, awaiting truck${_inS?' · in '+fmtDateTime(_inS.ts):''}`, 'background:rgba(245,158,11,.15);color:#92400e;border:1px solid rgba(245,158,11,.5)');
+            return `<td style="color:var(--text3);font-size:11px;text-align:center">—</td>`;
           }
-          if(_inS){
-            if(_ov45(_inS)) return `<td class="td-mono text-sm"><span style="background:#f59e0b;color:#fff;font-weight:700;padding:1px 6px;border-radius:6px" title="IN via ADMIN OVERRIDE: ${fmtDateTime(_inS.ts)}${_inS.operator?' · '+_v40_esc(_inS.operator):''}">IN</span></td>`;
-            return `<td class="td-mono text-sm"><span class="badge badge-blue" title="IN: ${fmtDateTime(_inS.ts)}">IN</span></td>`;
+          if (_left || (_outS && !_here)) {
+            if (_ov45(_outS)) return _cell('✓', `LEFT via ADMIN OVERRIDE: ${fmtDateTime(_outS.ts)}${_who(_outS)}`, 'background:#f59e0b;color:#fff');
+            if (_outS) return _cell('✓', `Left ${DEPT_LABELS[dept]||dept}: ${fmtDateTime(_outS.ts)}${_who(_outS)}${_inS?' · in '+fmtDateTime(_inS.ts):''}`, 'color:#6b7280;background:var(--surface3)');
+            return _cell('✓', `Left ${DEPT_LABELS[dept]||dept} — no OUT scan on record, implied because the box is now at ${DEPT_LABELS[stage]||stage}${_inS?' · in '+fmtDateTime(_inS.ts):''}`, 'color:#9ca3af;border:1px dashed #c7cdd6');
           }
-          if(_stageIdx45 > _di) return `<td class="td-mono text-sm" style="text-align:center"><span style="color:var(--text3)" title="No scan recorded — implied complete (box is already at ${DEPT_LABELS[stage]||stage}); scans from the pre-gate era or the 12–15 Jun outage were not captured">✓</span></td>`;
+          if (_here || _inS) {
+            if (_ov45(_inS)) return _cell('IN', `IN via ADMIN OVERRIDE: ${fmtDateTime(_inS.ts)}${_who(_inS)}`, 'background:#f59e0b;color:#fff');
+            return _cell('IN', _inS ? `In ${DEPT_LABELS[dept]||dept} since ${fmtDateTime(_inS.ts)}${_who(_inS)}` : `In ${DEPT_LABELS[dept]||dept} — no IN scan on record`, 'background:rgba(37,99,235,.12);color:#1d4ed8;border:1px solid rgba(37,99,235,.35)');
+          }
           return `<td style="color:var(--text3);font-size:11px;text-align:center">—</td>`;
         }).join('')}
         <td>${boxAlerts.length>0?`<span class="red-flag" title="${boxAlerts.map(a=>a.msg).join('; ')}">🚩 ${boxAlerts.length}</span>`:'—'}</td>
