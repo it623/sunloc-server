@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v60G';
+const APP_BUILD = 'v60H';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -345,14 +345,14 @@ let pgPool = null;
 if (USE_POSTGRES) {
   try {
     const { Pool } = require('pg');
-    pgPool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 10, keepAlive: true, idleTimeoutMillis: 30000, connectionTimeoutMillis: 10000 });
+    pgPool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 20, keepAlive: true, idleTimeoutMillis: 30000, connectionTimeoutMillis: 10000 });   // v60H: 10 → 20
     // v44F: a cloud Postgres dropping an IDLE pooled connection emits a pool 'error'. With NO listener,
     // node-postgres rethrows it as an uncaught exception and the ENTIRE process crashes — which silently
     // stops all scan saves (clients then queue scans locally and retry every 10s). Handle it so a routine
     // idle drop never crashes the server. keepAlive + idle/connect timeouts reduce idle-drop churn and
     // stop a single slow/stuck connection from blocking saves. (max 5 -> 10 for multi-device sync load.)
     pgPool.on('error', (err) => { console.error('[DB] idle pg client error (handled — NOT crashing):', err && err.message); });
-    console.log('[DB] Direct pg pool ready (max=10, keepAlive, idle/connect timeouts, error-handled)');
+    console.log('[DB] Direct pg pool ready (max=20, keepAlive, idle/connect timeouts, error-handled)');
   } catch(e) { console.error('[DB] pg pool error:', e.message); }
 } else {
   const Database = require('better-sqlite3');
@@ -5481,7 +5481,18 @@ async function backfillProductionActualsBatch() {
          AND order_id IN (SELECT id FROM production_orders WHERE batch_number IS NOT NULL AND batch_number <> '')`);
   }
 }
+// v60H (Ishan, 16 Nov — pool exhausted 7 min after a fresh start; 38 warms fired in the same second at boot):
+// warmActualsCache is SINGLE-FLIGHT. The throttle check used to sit after an `await`, so every poll that
+// arrived while one warm was running started its own — at startup, every plant device reconnecting at once
+// meant dozens of identical GROUP BY queries on a 10-connection pool. Now concurrent callers share the one
+// in-flight promise.
+let _warmInFlight = null;
 async function warmActualsCache() {
+  if (_warmInFlight) return _warmInFlight;
+  _warmInFlight = _warmActualsCacheInner().finally(() => { _warmInFlight = null; });
+  return _warmInFlight;
+}
+async function _warmActualsCacheInner() {
   // v41ZY: ensure existing NULL-batch rows are repaired before the per-batch sum is computed. Runs
   // once (retried until it succeeds), then never again — so the very next warm reflects the fix.
   if (!_poBatchBackfillDone) {
@@ -14378,6 +14389,7 @@ app.post('/api/planning/restore', async (req, res) => {
 });
 
 app.post('/api/planning/state', async (req, res) => {
+  try { _v60hOrdersStatusInvalidate(); } catch (_) {}   // v60H: a planning save may change order status
   try {
     const { state } = req.body;
     if (!state) return res.status(400).json({ ok: false, error: 'No state provided' });
@@ -15162,9 +15174,24 @@ app.get('/api/orders/machine/:machineId', (req, res) => {
 });
 
 // GET all active orders (summary for DPR to cache on load) — only 'running' status
+let _v60hOrdRowsCache = null, _v60hOrdRowsAt = 0, _v60hOrdRowsInFlight = null;
+const V60H_ORDERS_ROWS_TTL_MS = 15000;
+function _v60hOrdersStatusInvalidate() { _v60hOrdRowsCache = null; _v60hOrdRowsAt = 0; }
+async function _v60hOrdersStatusRows() {
+  if (_v60hOrdRowsCache && (Date.now() - _v60hOrdRowsAt) < V60H_ORDERS_ROWS_TTL_MS) return _v60hOrdRowsCache;
+  if (_v60hOrdRowsInFlight) return _v60hOrdRowsInFlight;
+  _v60hOrdRowsInFlight = (async () => {
+    const rows = pgPool
+      ? (await pgPool.query('SELECT id, data_json, status, deleted, updated_at FROM production_orders')).rows
+      : db.prepare('SELECT id, data_json, status, deleted, updated_at FROM production_orders').all();
+    _v60hOrdRowsCache = rows; _v60hOrdRowsAt = Date.now();
+    return rows;
+  })().finally(() => { _v60hOrdRowsInFlight = null; });
+  return _v60hOrdRowsInFlight;
+}
 app.get('/api/orders/active', async (req, res) => {
   try {
-    // Refresh actuals in background — throttled to 60s, non-blocking
+    // Refresh actuals in background — throttled (v60G: 10 min on reads), non-blocking, single-flight (v60H)
     warmActualsCache().catch(()=>{});
     const state = await getPlanningStateAsync();
     // v40 P18.14i Fix 2c: admins can request all orders (not just running) so the DPR UI
@@ -15189,9 +15216,11 @@ app.get('/api/orders/active', async (req, res) => {
       // inconsistent status for orders the DB updated in the same write. So take status straight from
       // the DB for any order it knows, and fold in non-deleted DB orders the blob is missing (rebuilt
       // from data_json). Deleted is sticky. Falls back to the raw blob on any error — never worse.
-      let dbRows = [];
-      if (pgPool) dbRows = (await pgPool.query('SELECT id, data_json, status, deleted, updated_at FROM production_orders')).rows;
-      else dbRows = db.prepare('SELECT id, data_json, status, deleted, updated_at FROM production_orders').all();
+      // v60H: this full read of production_orders (2,000+ rows with data_json) ran once per poll per device —
+      // 46 concurrent copies were queued when the pool ran dry at 11:00 on 16 Nov. It is now shared: one query
+      // serves every poll that arrives within 15 s, and concurrent callers await the same in-flight promise.
+      // The planning-state save clears it so a status change is visible on the next poll.
+      const dbRows = await _v60hOrdersStatusRows();
       const byId = {};
       for (const o of reconciledOrders) if (o && o.id) byId[o.id] = { ...o };
       for (const row of dbRows) {
