@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v60D</title>
+<title>Sunloc Tracking Suite v1.0 · build v60E</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -604,7 +604,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v60D</p>
+      <p>Tracking Suite v1.0 · build v60E</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -635,7 +635,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v60D</p>
+      <p>Tracking Suite v1.0 · build v60E</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -12441,8 +12441,29 @@ function renderBatchCard(batch){
   </div>`;
 }
 
+// v60E (Ishan, 14 Nov — 26ZE171 trail showed "no scan on record" for boxes the AIM export plainly has):
+// the box-level trail was reading state.scans, which holds only the 2,000 most recent scans — two or three
+// plant days — so every older IN/OUT rendered as "implied". The detail now loads the batch's FULL scan
+// history from /api/tracking/batch-scans (reversals already excluded) the first time it is opened and
+// renders from that; until it arrives the stage cells show "…" rather than a guess.
+window._bxScans = window._bxScans || {}; window._bxScansAt = window._bxScansAt || {};
+async function _v60eLoadBatchScans(batchNo){
+  if (window._bxScans[batchNo] && (Date.now() - (window._bxScansAt[batchNo] || 0)) < 120000) return window._bxScans[batchNo];   // 2-min freshness
+  try {
+    const r = await fetch(serverUrl + '/api/tracking/batch-scans/' + encodeURIComponent(batchNo), { signal: AbortSignal.timeout(20000) });
+    const j = await r.json().catch(() => null);
+    if (j && j.ok && Array.isArray(j.scans)) { window._bxScans[batchNo] = j.scans; window._bxScansAt[batchNo] = Date.now(); return j.scans; }
+  } catch (e) { console.warn('[v60E batch-scans] failed:', e?.message); }
+  return null;
+}
 function toggleBatchDetail(batchNo){
   const el=document.getElementById(`batch-detail-${batchNo}`);
+  if (el && el.classList.contains('hidden')) {   // v60E: opening → (re)fetch full history if stale, then repaint this card's detail
+    _v60eLoadBatchScans(batchNo).then(() => {
+      const b = state.batches.find(x => x.batchNumber === batchNo); const d = document.getElementById(`batch-detail-${batchNo}`);
+      if (b && d) d.innerHTML = renderBatchDetail(b);
+    });
+  }
   if(el) el.classList.toggle('hidden');
 }
 
@@ -12492,6 +12513,7 @@ function renderBatchDetail(batch){
     <span><span style="display:inline-block;padding:0 6px;border-radius:6px;font-weight:700;color:#fff;background:#f59e0b">✓</span> admin override</span>
     <span><span style="display:inline-block;padding:0 6px;border-radius:6px;font-weight:700;color:#047857;background:rgba(0,230,118,.18);border:1px solid rgba(0,230,118,.5)">✓</span> dispatched</span>
   </div>
+  ${window._bxScans[batchNo] ? '' : `<div style="font-size:11px;color:var(--text3);margin:-2px 0 8px">Loading the full scan history for ${batchNo}…</div>`}
   <div class="tbl-wrap"><table>
     <thead><tr><th>Label #</th><th>Qty (L)</th><th>Status</th><th>Current Stage</th>
     ${flow.map(d=>`<th style="text-align:center">${DEPT_LABELS[d]||d}</th>`).join('')}
@@ -12499,7 +12521,8 @@ function renderBatchDetail(batch){
     <tbody>
     ${labels.map(l=>{
       const stage=getBoxCurrentStage(l.id);
-      const scans=getScansForBox(l.id);
+      const _fullScans = window._bxScans[batchNo];   // v60E: full history for this batch (null until loaded)
+      const scans=_fullScans ? _fullScans.filter(s=>s.labelId===l.id).sort((a,b)=>new Date(a.ts)-new Date(b.ts)) : getScansForBox(l.id);
       const getStamp=(dept,type)=>{const s=scans.find(sc=>sc.dept===dept&&sc.type===type);return s?fmtDateTime(s.ts):null;};
       const boxAlerts=state.alerts.filter(a=>a.labelId===l.id);
       const isVoided=l.voided;
@@ -12537,6 +12560,7 @@ function renderBatchDetail(batch){
           const _ov45=s=>!!(s&&(Number(s.is_admin_override)===1||s.adminOverride===true||s._adminOverride===true));
           const _who=s=>s&&s.operator?' · '+_v40_esc(s.operator):'';
           const _cell=(inner,title,style)=>`<td class="td-mono text-sm" style="text-align:center;white-space:nowrap"><span style="display:inline-block;min-width:28px;text-align:center;padding:1px 6px;border-radius:6px;font-weight:700;${style}" title="${title}">${inner}</span></td>`;
+          if (!_fullScans) return `<td style="color:var(--text3);font-size:11px;text-align:center" title="Loading full scan history…">…</td>`;   // v60E
           const _left = _stageIdx45 > _di;                       // box is already downstream of this department
           const _here = _stageIdx45 === _di && dept !== 'dispatch';
           if (dept === 'dispatch') {

@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v60D';
+const APP_BUILD = 'v60E';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -22348,14 +22348,14 @@ app.get('/api/tracking/batch-scans/:batch', async (req, res) => {
     let rows;
     if (pgPool) {
       rows = (await pgPool.query(
-        `SELECT s.id, s.label_id, s.batch_number, s.dept, s.type, s.ts, s.size, s.label_number
+        `SELECT s.id, s.label_id, s.batch_number, s.dept, s.type, s.ts, s.size, s.label_number, s.operator, s.is_admin_override
          FROM tracking_scans s
          WHERE s.batch_number = $1
            AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id = s.id)
          ORDER BY s.ts`, [batch])).rows;
     } else {
       rows = db.prepare(
-        `SELECT s.id, s.label_id, s.batch_number, s.dept, s.type, s.ts, s.size, s.label_number
+        `SELECT s.id, s.label_id, s.batch_number, s.dept, s.type, s.ts, s.size, s.label_number, s.operator, s.is_admin_override
          FROM tracking_scans s
          WHERE s.batch_number = ?
            AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id = s.id)
@@ -22363,7 +22363,8 @@ app.get('/api/tracking/batch-scans/:batch', async (req, res) => {
     }
     res.json({ ok: true, batch, scans: (rows || []).map(r => ({
       id: r.id, labelId: r.label_id, batchNumber: r.batch_number, dept: r.dept,
-      type: r.type, ts: r.ts, size: r.size, labelNumber: r.label_number
+      type: r.type, ts: r.ts, size: r.size, labelNumber: r.label_number,
+      operator: r.operator || null, is_admin_override: Number(r.is_admin_override) || 0   // v60E: trail tooltips + amber override
     })) });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
