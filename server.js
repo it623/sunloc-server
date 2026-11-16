@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v60F';
+const APP_BUILD = 'v60G';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -5320,6 +5320,8 @@ function getActiveOrdersForMachine(machineId) {
 // Helper: get total actuals for an order (sums all runs across all machines/shifts)
 let _actualsCache = null;
 let _actualsCacheTime = 0;
+const ACTUALS_WARM_MIN_MS = Math.max(60000, parseInt(process.env.SUNLOC_ACTUALS_WARM_MIN_MS, 10) || 10 * 60 * 1000);   // v60G: 10 min baseline for read-path warms
+const _v60gCohereLogged = new Set();   // v60G: serve-time cohere notices logged once per batch, not on every /state serve
 // v41ZI Item 4: pure batch-keyed DPR gross — SUM(qty_lakhs) GROUP BY batch_number ONLY (no order_id
 // in the GROUP BY). The legacy _actualsCache groups by (order_id,batch_number) and then writes one
 // dict entry per group, so a batch whose production_actuals rows carry differing/NULL order_id values
@@ -5385,14 +5387,14 @@ function _v54kCohereEnd(ord) {
     if (_ld54n && ord.endDate) {
       const _ldIso54n = _v51wIstMidnightIso(_ld54n);
       if (_ldIso54n && new Date(ord.endDate) < new Date(_ldIso54n)) {
-        console.warn(`[v54N dpr-end-floor] ${_bn54n}: served end ${ord.endDate} precedes last DPR production ${_ld54n} — lifted (blob untouched)`);
+        if (!_v60gCohereLogged.has('end:' + _bn54n)) { _v60gCohereLogged.add('end:' + _bn54n); console.warn(`[v54N dpr-end-floor] ${_bn54n}: served end ${ord.endDate} precedes last DPR production ${_ld54n} — lifted (blob untouched) [logged once per batch per process — v60G]`); }
         ord.endDate = _ldIso54n;
       }
     }
     if (!ord.startDate || !ord.endDate) return;
     const st = new Date(ord.startDate), en = new Date(ord.endDate);
     if (isNaN(st) || isNaN(en) || en >= st) return;
-    console.warn(`[v54K date-cohere] ${ord.batchNumber || ord.id}: served end ${ord.endDate} < start ${ord.startDate} — end lifted to start (blob untouched)`);
+    if (!_v60gCohereLogged.has('inv:' + (ord.batchNumber || ord.id))) { _v60gCohereLogged.add('inv:' + (ord.batchNumber || ord.id)); console.warn(`[v54K date-cohere] ${ord.batchNumber || ord.id}: served end ${ord.endDate} < start ${ord.startDate} — end lifted to start (blob untouched) [logged once per batch per process — v60G]`); }
     ord.endDate = ord.startDate;
   } catch (_e) {}
 }
@@ -5486,8 +5488,14 @@ async function warmActualsCache() {
     try { await backfillProductionActualsBatch(); _poBatchBackfillDone = true; console.log('[DPR] production_actuals batch backfill complete'); }
     catch(e) { console.warn('[DPR] batch backfill failed (will retry next warm):', e.message); }
   }
-  // Throttle to 60s — prevents DB hammering from every device's 30s auto-sync
-  if (Date.now() - _actualsCacheTime < 60000 && _actualsCache) return;
+  // Throttle — prevents DB hammering from every device's 30s auto-sync.
+  // v60G (Ishan, 16 Nov — plant-wide login/save timeouts until a restart): this full recompute (GROUP BY over
+  // production_actuals, order→batch maps, split-family apportionment) was running every 60 s on the read
+  // path alone, blocking the event loop each time; over days the runs overlapped and logins queued behind
+  // them. Reads now accept a cache up to 10 min old. Every WRITE that changes actuals (DPR save, restore-day,
+  // bulk import, batch renumber, gross override) still sets _actualsCacheTime = 0 and gets an immediate warm,
+  // so nothing a user saves is ever stale on the next read.
+  if (Date.now() - _actualsCacheTime < ACTUALS_WARM_MIN_MS && _actualsCache) return;
   _actualsCacheTime = Date.now();
   if (pgPool) {
     try {
