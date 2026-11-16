@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v60E</p>
+      <p>Planning Suite v3.0 · build v60F</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -4097,8 +4097,20 @@ function _renderImmediate() {
 // Debounced render — collapses multiple rapid render() calls into ONE DOM rebuild
 // Prevents screen flapping from back-to-back auto-sync renders (30s poll + tracking status)
 let _renderDebounceTimer = null;
+// v60F (Ishan / Dispatch Manager, 16 Nov — "cannot type more than three letters in the Dispatch search; the
+// case keeps flipping"): the Dispatch page re-renders itself in the background (tracking actuals ~30 s,
+// invoice state, sync) and every rebuild replaced the search box mid-keystroke; the filter pass then wrote
+// the lower-cased copy back into it. Background renders on Dispatch are now DEFERRED while any input in the
+// page has focus and run once the user leaves the field; the filter never rewrites the box with lower case.
+window._v60fRenderDeferred = false;
+function _v60fTypingOnDispatch(){ return state.currentPage === 'dispatch' && _userIsFocused() && (document.activeElement.closest ? !!document.activeElement.closest('#content') : true); }
+document.addEventListener('focusout', () => {
+  if (!window._v60fRenderDeferred) return;
+  setTimeout(() => { if (window._v60fRenderDeferred && !_v60fTypingOnDispatch()) { window._v60fRenderDeferred = false; try { _renderImmediate(); } catch(_) {} } }, 250);
+}, true);
 function render() {
   if(_userIsFocused() && state.currentPage==='search') return; // fast path
+  if (_v60fTypingOnDispatch()) { window._v60fRenderDeferred = true; return; }   // v60F: never rebuild the Dispatch page under the user's cursor
   clearTimeout(_renderDebounceTimer);
   _renderDebounceTimer = setTimeout(() => {
     _renderDebounceTimer = null;
@@ -11322,7 +11334,7 @@ function renderDispatch() {
   if (_trackingAge > 30000) {
     window._trackingLastLoaded = Date.now();
     SYNC.loadTrackingStatus().then(() => {
-      if (state.currentPage === 'dispatch') try { _renderImmediate(); } catch { try { renderDispatch(); } catch {} }
+      if (state.currentPage === 'dispatch') { if (_v60fTypingOnDispatch()) window._v60fRenderDeferred = true; else try { _renderImmediate(); } catch { try { renderDispatch(); } catch {} } }   // v60F
     }).catch(() => {});
   }
   const editable = isMonthEditable(_selectedPlanMonth);
@@ -11337,7 +11349,7 @@ function renderDispatch() {
     _v39_loadInvoiceState({ silent: true }).then(() => {
       // If we got new state and the dispatch page is still active, re-render
       if (state.currentPage === 'dispatch') {
-        try { _renderImmediate(); } catch {}
+        if (_v60fTypingOnDispatch()) window._v60fRenderDeferred = true; else try { _renderImmediate(); } catch {}   // v60F
       }
     });
   }
@@ -12146,7 +12158,7 @@ function filterPlanningOrderView(zone) {
   if (!tbody) return;
   const qs = (f._quickSearch||'').toLowerCase().trim();
   const qsEl = document.getElementById('pov-quick-search-' + zone);
-  if (qsEl && document.activeElement !== qsEl) qsEl.value = qs;
+  if (qsEl && document.activeElement !== qsEl && qsEl.value !== (f._quickSearch||'')) qsEl.value = f._quickSearch || '';   // v60F: as typed, never lower-cased
   let visibleCount = 0, totalCount = 0;
   [...tbody.querySelectorAll('tr')].forEach(row => {
     if (row.classList.contains('pov-total-row')) return; // handle separately
