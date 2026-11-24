@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v60H</title>
+<title>GPR · build v60J</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -421,8 +421,8 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v60H</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v60H</div>
+    <h1>GPR<span class="vpill">v60J</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v60J</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -442,7 +442,7 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v60H</span></div>
+  <div class="nbrand">GPR<span class="vpill">v60J</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <span style="display:inline-flex;align-items:center;gap:5px;margin-right:10px;padding:2px 6px;border:1px solid #3949ab;border-radius:6px;background:#232b6e" title="Production month — the month turns at 06:00 IST on the 1st (same rule as DPR, Tracking and Planning). Every list, picker and period view is scoped to this month's batch cohort; stock balances and pending receipts always show the live position.">
@@ -6221,7 +6221,7 @@ async function loadMaterialIssuance(){
       + '</div>';
     // v59Y: one compact table per window — floors as rows; no day/batch annotations in the cells
     const TH = '<th>Floor</th><th class="num" title="packable kg ÷ production days in the window">Packable kg/day</th><th class="num" title="packable kg per day ÷ planning yield — virgin + reuse">Gelatine to issue</th>'
-      + '<th class="num" title="cutting / salvage + return solution generated in the window ÷ days — the reuse that must be consumed back each day">Generated /day</th><th class="num" title="cutting / salvage + return solution actually consumed into tanks ÷ days">Consumed /day</th>'
+      + '<th class="num" title="cutting / salvage + oily salvage + return solution generated in the window ÷ days — the reuse that must be consumed back each day">Generated /day</th><th class="num" title="cutting / salvage + oily salvage + return solution actually consumed into tanks ÷ days">Consumed /day</th>'
       + '<th class="num" title="consumed/day − generated/day: + drawn from stock (that much virgin stayed unused) · − added to stock (to be consumed in the coming days)">Net stock consumption /day</th>'
       + '<th class="num" title="|net stock consumption per day| ÷ days chosen in “Take the reduction” — one-time cut to virgin">Adjustment /day</th>'
       + (ex>0 ? '<th class="num" title="the plant extra reuse target ('+fmt(ex,0)+' kg/day) apportioned to this floor by its share of virgin, rounded up to the next kg; the last floor takes the remainder so floors sum to the target">Extra reuse /day</th>' : '')
@@ -6240,7 +6240,7 @@ async function loadMaterialIssuance(){
       h += '<tr style="background:var(--s3);font-weight:700"><td>TOTAL</td>'+cell({ packablePerDayKg:S(k,'packablePerDayKg'), issueKg:S(k,'issueKg'), genPerDayKg:S(k,'genPerDayKg'), consPerDayKg:S(k,'consPerDayKg'), netStockKg:S(k,'netStockKg'), adjustPerDayKg:S(k,'adjustPerDayKg'), extraKgPerDay:S(k,'extraKgPerDay'), virginPerDayKg:S(k,'virginPerDayKg') })+'</tr>';
       h += '</tbody></table></div>';
     });
-    h += '<div class="hint" style="margin-top:8px">For production day <b>'+esc(_dm(d.forDay))+'</b>; basis ends '+esc(_dm(d.basisEndsOn))+' (the last completed production day). Gelatine to issue = packable kg/day &divide; '+d.planYieldPct+'%. Net stock consumption /day = consumed/day − generated/day: <b>+</b> means more reuse stock went into production than was generated, so that much virgin stayed unused; <b>−</b> means stock built up and has to be consumed in the coming days. Either way the adjustment = that amount &divide; '+d.spreadDays+' day'+(d.spreadDays===1?'':'s')+' ('+esc(spreadTxt)+'), a one-time cut to virgin that clears once the stock is level. Extra reuse target '+fmt(ex,0)+' kg/day is a plant figure: it is apportioned across the floors by each floor\u2019s share of virgin (rounded up to the next kg, last floor takes the remainder) and cut from that floor\u2019s virgin every day. <b>Virgin to issue = gelatine to issue − adjustment − extra</b> (never below 0). Generation counts accepted and pending cutting / salvage and recovered return solution; expected WIP salvage is not counted until it is actually generated.</div>'
+    h += '<div class="hint" style="margin-top:8px">For production day <b>'+esc(_dm(d.forDay))+'</b>; basis ends '+esc(_dm(d.basisEndsOn))+' (the last completed production day). Gelatine to issue = packable kg/day &divide; '+d.planYieldPct+'%. Net stock consumption /day = consumed/day − generated/day: <b>+</b> means more reuse stock went into production than was generated, so that much virgin stayed unused; <b>−</b> means stock built up and has to be consumed in the coming days. Either way the adjustment = that amount &divide; '+d.spreadDays+' day'+(d.spreadDays===1?'':'s')+' ('+esc(spreadTxt)+'), a one-time cut to virgin that clears once the stock is level. Extra reuse target '+fmt(ex,0)+' kg/day is a plant figure: it is apportioned across the floors by each floor\u2019s share of virgin (rounded up to the next kg, last floor takes the remainder) and cut from that floor\u2019s virgin every day. <b>Virgin to issue = gelatine to issue − adjustment − extra</b> (never below 0). Generation counts accepted and pending cutting / salvage, oily salvage (floor by the machine entered) and recovered return solution; consumption is what the tanks drew from each of the four heads; expected WIP salvage is not counted until it is actually generated.</div>'
     out.innerHTML = h;
   }catch(e){ out.innerHTML = '<div class="empty">Could not compute the issuance.</div>'; }
 }
@@ -6251,7 +6251,7 @@ function exportMaterialIssuance(){
     columns:[ {key:'basis',label:'Basis',w:12},{key:'from',label:'From',w:12},{key:'to',label:'To',w:12},{key:'floor_label',label:'Floor',w:12},{key:'packableLakhs',label:'Packable L',w:12,num:true},{key:'packableKg',label:'Packable kg',w:12,num:true},
       {key:'days',label:'Days',w:7,num:true},{key:'batches',label:'Batches',w:9,num:true},{key:'packablePerDayKg',label:'kg / day',w:10,num:true},{key:'issueKg',label:'Gelatine to issue kg',w:18,num:true},
       {key:'genPerDayKg',label:'Generated kg/day',w:14,num:true},{key:'consPerDayKg',label:'Consumed kg/day',w:14,num:true},{key:'netStockKg',label:'Net stock consumption kg/day',w:18,num:true},{key:'adjustPerDayKg',label:'Adjustment kg/day',w:14,num:true},{key:'extraKgPerDay',label:'Extra reuse kg/day',w:14,num:true},{key:'virginPerDayKg',label:'Virgin to issue kg/day',w:16,num:true},
-      {key:'generatedCutSalKg',label:'Generated cutting/salvage kg',w:16,num:true},{key:'generatedReturnKg',label:'Generated return soln kg',w:16,num:true},{key:'consumedCutSalKg',label:'Consumed cutting/salvage kg',w:16,num:true},{key:'consumedReturnKg',label:'Consumed return soln kg',w:16,num:true},{key:'spreadDays',label:'Spread days',w:9,num:true} ] });
+      {key:'generatedCutSalKg',label:'Generated cutting/salvage kg',w:16,num:true},{key:'generatedOilyKg',label:'Generated oily salvage kg',w:16,num:true},{key:'generatedReturnKg',label:'Generated return soln kg',w:16,num:true},{key:'consumedCutSalKg',label:'Consumed cutting/salvage kg',w:16,num:true},{key:'consumedOilyKg',label:'Consumed oily salvage kg',w:16,num:true},{key:'consumedReturnKg',label:'Consumed return soln kg',w:16,num:true},{key:'spreadDays',label:'Spread days',w:9,num:true} ] });
 }
 // ═══ v58H item 7: MATERIAL RECONCILIATION — by batch, one row = yield + planned vs actual ═══════
 async function loadMaterialRecon(){
@@ -6673,6 +6673,9 @@ async function loadYieldDaily(){
   if(val('yd_from')) q.set('from', val('yd_from'));
   if(val('yd_to')) q.set('to', val('yd_to'));
   try{
+    // v60I: the month-to-date fetch is started alongside the range fetch, not after it
+    const _ptEarly = val('yd_to') || productionDay(), _mStartEarly = String(_ptEarly).slice(0,8)+'01';
+    const _mtdP = (val('yd_from') === _mStartEarly) ? null : api('/api/gpr/yield-daily?from='+encodeURIComponent(_mStartEarly)+'&to='+encodeURIComponent(_ptEarly)).catch(()=>null);
     const d = await api('/api/gpr/yield-daily?' + q.toString());
     // v55K item 15: per-floor snapshot on top. v60B (Ishan, 13 Nov): three distinct figures — previous
     // completed production day · the SELECTED PERIOD (Σ output ÷ Σ material over the loaded range) · true
@@ -6694,7 +6697,7 @@ async function loadYieldDaily(){
         let mtd = null;
         try {
           if (_pf === _mStart && _pt === (val('yd_to') || productionDay())) mtd = period;      // the loaded range IS month-to-date
-          else { const m = await api('/api/gpr/yield-daily?from='+encodeURIComponent(_mStart)+'&to='+encodeURIComponent(_pt)); if (m && m.ok) mtd = _agg(m.days); }
+          else { const m = _mtdP ? await _mtdP : await api('/api/gpr/yield-daily?from='+encodeURIComponent(_mStart)+'&to='+encodeURIComponent(_pt)); if (m && m.ok) mtd = _agg(m.days); }
         } catch(_m) { mtd = null; }
         const multi = _pf !== _pt;
         const pct = (o,k) => { const a = o && o[k]; return a && a.inKg>0 ? a.outKg/a.inKg*100 : null; };
@@ -6766,7 +6769,8 @@ async function floorWorking(floor, from, to){
   if(!d || !d.ok){ yEl.innerHTML = '<div class="empty">'+esc((d&&d.error)||'Could not compute the yield')+'</div>'; return; }
   // sum the day cells of this floor
   const M = { virginKg:0, colourKg:0, fgRemeltKg:0, reuseInKg:0, generatedKg:0, generatedOwnKg:0, trackingSalvageKg:0, expectedSalvageKg:0, returnUsedKg:0, returnRecoveredKg:0, tanks:0,   /* v59S: + expected WIP salvage */
-              reuseCuttingKg:0, reuseSalvageKg:0, genCutAcceptedKg:0, genCutPendingKg:0, genSalManualAcceptedKg:0, genSalManualPendingKg:0, genTrkAcceptedKg:0, genTrkPendingKg:0 };   // v59B
+              reuseCuttingKg:0, reuseSalvageKg:0, genCutAcceptedKg:0, genCutPendingKg:0, genSalManualAcceptedKg:0, genSalManualPendingKg:0, genTrkAcceptedKg:0, genTrkPendingKg:0,
+              oilyUsedKg:0, oilyGenKg:0, oilyGenAcceptedKg:0, oilyGenPendingKg:0 };   // v59B; v60I: + oily salvage head
   let num = 0, den = 0, crush = 0, days = 0; const W = {};
   (d.days||[]).forEach(day=>(day.floors||[]).forEach(f=>{ if(f.floor!==floor) return; days++;
     num += Number(f.numeratorKg||0); den += Number(f.denominatorKg||0); crush += Number(f.crushKg||0);
@@ -6803,16 +6807,21 @@ async function floorWorking(floor, from, to){
     + '<tr class="sumrow"><td>= Net cuttings</td><td class="num">'+_ywSg(Number(M.reuseCuttingKg||0)-(M.genCutAcceptedKg+M.genCutPendingKg))+'</td></tr>'
     + '<tr class="blkhead"><td colspan="2">Salvage</td></tr>'
     + '<tr><td>+ Salvage charged into the tanks (Ledger A)</td><td class="num">+'+n1(M.reuseSalvageKg)+'</td></tr>'
-    + '<tr><td>&minus; Salvage generated by the floor\'s batches (GPR entries)'+_ywAP(M.genSalManualAcceptedKg,M.genSalManualPendingKg)+'</td><td class="num" style="color:'+((M.genSalManualAcceptedKg+M.genSalManualPendingKg)>0.005?'var(--red)':'var(--t3)')+'">&minus;'+n1(M.genSalManualAcceptedKg+M.genSalManualPendingKg)+'</td></tr>'
-    + '<tr><td>&minus; Salvage recovered through Tracking (AIM / PI wastage; printing salvage from the Daily Printing Log)'+_ywAP(M.genTrkAcceptedKg,M.genTrkPendingKg)+' <span style="color:var(--t3);font-size:10.5px">— the stock figure (what GPR received), as in the batch working</span></td><td class="num" style="color:var(--red)">&minus;'+n1(M.trackingSalvageKg)+'</td></tr>'
+    /* v60I (Ishan, 24 Nov): the "generated by the floor's batches (GPR entries)" line was oily salvage mis-filed under salvage plus the odd manual AIM entry — oily now has its own head below; any residual manual salvage entry rides this line */
+    + '<tr><td>&minus; Salvage recovered through Tracking (AIM / PI wastage; printing salvage from the Daily Printing Log)'+_ywAP(M.genTrkAcceptedKg+M.genSalManualAcceptedKg,M.genTrkPendingKg+M.genSalManualPendingKg)+((M.genSalManualAcceptedKg+M.genSalManualPendingKg)>0.005?' <span style="color:var(--t3);font-size:10.5px">incl. '+n1(M.genSalManualAcceptedKg+M.genSalManualPendingKg)+' kg entered manually in GPR</span>':'')+' <span style="color:var(--t3);font-size:10.5px">— the stock figure (what GPR received), as in the batch working</span></td><td class="num" style="color:var(--red)">&minus;'+n1(Number(M.trackingSalvageKg||0)+M.genSalManualAcceptedKg+M.genSalManualPendingKg)+'</td></tr>'
     + '<tr><td>&minus; Salvage the WIP is expected to return <span style="color:var(--t3);font-size:10.5px">— the batches\' forecast (standard printing / PI loss ahead + (100 − A) % of unscanned WIP), apportioned to the days of this period by their share of each batch\'s production'+(Number(M.expectedSalvageKg)>0.005?'':'; none in this period')+'</span></td><td class="num" style="color:'+(Number(M.expectedSalvageKg)>0.005?'var(--red)':'var(--t3)')+'">&minus;'+n1(M.expectedSalvageKg)+'</td></tr>'   /* v59S */
     + '<tr class="sumrow"><td>= Net salvage</td><td class="num">'+_ywSg(Number(M.reuseSalvageKg||0)-(M.genSalManualAcceptedKg+M.genSalManualPendingKg)-Number(M.trackingSalvageKg||0)-Number(M.expectedSalvageKg||0))+'</td></tr>'
     + '<tr class="blkhead"><td colspan="2">Return solution</td></tr>'
     + '<tr><td>+ Return solution drawn into the tanks (at the lots\' concentration)</td><td class="num"'+(M.returnUsedKg>0.005?'':' style="color:var(--t3)"')+'>+'+n1(M.returnUsedKg)+'</td></tr>'   /* v58X item 2: always shown */
     + '<tr><td>&minus; Return solution recovered at batch close</td><td class="num" style="color:'+(M.returnRecoveredKg>0.005?'var(--red)':'var(--t3)')+'">&minus;'+n1(M.returnRecoveredKg)+'</td></tr>'
+    /* v60I (Ishan, 24 Nov): OILY SALVAGE as the fourth head — used (the tanks' oily reuse lines) and generated (GPR oily entries, floor by the machine entered); floor-wise only, no batch */
+    + '<tr class="blkhead"><td colspan="2">Oily salvage</td></tr>'
+    + '<tr><td>+ Oily salvage charged into the tanks (reuse lines)</td><td class="num"'+(M.oilyUsedKg>0.005?'':' style="color:var(--t3)"')+'>+'+n1(M.oilyUsedKg)+'</td></tr>'
+    + '<tr><td>&minus; Oily salvage generated on this floor (GPR entries; floor by the machine entered)'+_ywAP(M.oilyGenAcceptedKg,M.oilyGenPendingKg)+'</td><td class="num" style="color:'+(M.oilyGenKg>0.005?'var(--red)':'var(--t3)')+'">&minus;'+n1(M.oilyGenKg)+'</td></tr>'
+    + '<tr class="sumrow"><td>= Net oily salvage</td><td class="num">'+_ywSg(Number(M.oilyUsedKg||0)-Number(M.oilyGenKg||0))+'</td></tr>'
     + (crush>0.05 ? '<tr><td>+ Approved crushing</td><td class="num">'+n1(crush)+'</td></tr>' : '')
     + '<tr class="sumrow"><td>Net material</td><td class="num"><b>'+n1(den)+'</b></td></tr></tbody></table>'
-    + '<div class="hbnote" style="margin-top:6px">Same ladder as the batch working: cuttings and salvage are each counted once — what the floor\'s batches generated came out of virgin gelatine already in this figure, so only the net of charged over generated stays in; return solution follows the same rule (used in, recovered out). The batch working also nets the salvage its WIP is still expected to return; a day-split cannot attribute that, so it is not applied here.</div></div></div>';
+    + '<div class="hbnote" style="margin-top:6px">Same ladder as the batch working, with oily salvage as the fourth head (floor-wise only — oily carries no batch): cuttings, salvage and oily are each counted once — what the floor\'s batches generated came out of virgin gelatine already in this figure, so only the net of charged over generated stays in; return solution follows the same rule (used in, recovered out). The batch working also nets the salvage its WIP is still expected to return; a day-split cannot attribute that, so it is not applied here.</div></div></div>';
   mEl.innerHTML = '<div class="fgroup-title">Cutting, salvage &amp; return solution &mdash; movements on '+esc(lbl)+', '+esc(period)+'</div><div id="fwMin"><div class="empty">Loading the movements&hellip;</div></div>';
   let mv = null; try{ mv = await api('/api/gpr/floor-movements?floor='+encodeURIComponent(floor)+'&from='+encodeURIComponent(from)+'&to='+encodeURIComponent(to)); }catch(e){}
   const mIn = document.getElementById('fwMin'); if(!mIn) return;
@@ -6894,9 +6903,11 @@ function ywExport(key){
     /* v59L: cuttings / salvage / return-solution blocks, as on screen */
     [['Virgin gelatine',M.virginKg],['Colour + TiO2',M.colourKg],['FG remelt',M.fgRemeltKg],['Fresh material',M.virginKg+M.colourKg+M.fgRemeltKg],
      ['CUTTINGS',null],['+ Cuttings charged',M.reuseCuttingKg],['− Cuttings generated (accepted '+n(M.genCutAcceptedKg)+' · pending '+n(M.genCutPendingKg)+')',-(M.genCutAcceptedKg+M.genCutPendingKg)],['= Net cuttings',Number(M.reuseCuttingKg||0)-(M.genCutAcceptedKg+M.genCutPendingKg)],
-     ['SALVAGE',null],['+ Salvage charged',M.reuseSalvageKg],['− Salvage generated, GPR entries (accepted '+n(M.genSalManualAcceptedKg)+' · pending '+n(M.genSalManualPendingKg)+')',-(M.genSalManualAcceptedKg+M.genSalManualPendingKg)],
-     ['− Salvage recovered through Tracking (accepted '+n(M.genTrkAcceptedKg)+' · pending '+n(M.genTrkPendingKg)+')',-M.trackingSalvageKg],['− Expected WIP salvage (forecast, apportioned to the period)',-Number(M.expectedSalvageKg||0)],['= Net salvage',Number(M.reuseSalvageKg||0)-(M.genSalManualAcceptedKg+M.genSalManualPendingKg)-Number(M.trackingSalvageKg||0)-Number(M.expectedSalvageKg||0)],
-     ['RETURN SOLUTION',null],['+ Return solution used',M.returnUsedKg],['− Return solution recovered',-M.returnRecoveredKg],['+ Approved crushing',y.crush||0],['Net material',y.den]].forEach(r=>rows.push(r[1]==null?[r[0]]:[r[0], n(r[1])]));
+     ['SALVAGE',null],['+ Salvage charged',M.reuseSalvageKg],
+     ['− Salvage recovered through Tracking incl. manual GPR salvage entries (accepted '+n(M.genTrkAcceptedKg+M.genSalManualAcceptedKg)+' · pending '+n(M.genTrkPendingKg+M.genSalManualPendingKg)+')',-(M.trackingSalvageKg+M.genSalManualAcceptedKg+M.genSalManualPendingKg)],['− Expected WIP salvage (forecast, apportioned to the period)',-Number(M.expectedSalvageKg||0)],['= Net salvage',Number(M.reuseSalvageKg||0)-(M.genSalManualAcceptedKg+M.genSalManualPendingKg)-Number(M.trackingSalvageKg||0)-Number(M.expectedSalvageKg||0)],
+     ['RETURN SOLUTION',null],['+ Return solution used',M.returnUsedKg],['− Return solution recovered',-M.returnRecoveredKg],
+     ['OILY SALVAGE',null],['+ Oily salvage charged (reuse lines)',M.oilyUsedKg||0],['− Oily salvage generated (GPR entries, floor by machine; accepted '+n(M.oilyGenAcceptedKg||0)+' · pending '+n(M.oilyGenPendingKg||0)+')',-(M.oilyGenKg||0)],['= Net oily salvage',(M.oilyUsedKg||0)-(M.oilyGenKg||0)],
+     ['+ Approved crushing',y.crush||0],['Net material',y.den]].forEach(r=>rows.push(r[1]==null?[r[0]]:[r[0], n(r[1])]));
   }
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Yield');
   const mv = D.mv; if(mv){

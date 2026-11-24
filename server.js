@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v60H';
+const APP_BUILD = 'v60J';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -292,6 +292,10 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
+// v60I (Ishan, 24 Nov — Yield / Material issuance "Computing…" for minutes): per-batch yield results are memoised
+// for a short while (see _v60iYieldMemo); any write that could change them bumps this epoch so the memo is dropped.
+let _v60iYieldEpoch = 1;
+app.use((req, res, next) => { if (req.method !== 'GET' && req.method !== 'HEAD' && /^\/api\/(gpr|dpr|tracking|planning|orders)/.test(req.path || '')) _v60iYieldEpoch++; next(); });
 // ═══ v50T HTML CACHE KILL (5 Aug — Railway logs prove a pre-v48Z planning.html STILL live on the
 // floor: "[v50L] list-less save (legacy/stale client)" fired twice in a 5-minute window). With
 // Cloudflare fronting the domain and express.static's default caching, deployed HTML does not
@@ -27944,7 +27948,23 @@ function gprFloorOfMachine(machineId, masters) {
 // Confirmed by Ishan: recovery credited is not recovery used. Material recovered
 // but not reused reduces the denominator; recovered AND reused nets back to
 // neutral because the consumption leg adds it straight back.
-async function gprComputeYield(batchNumber) {
+// v60I: gprComputeYield costs ~25 sequential queries per batch; the day grid calls it once per batch and the
+// Daily tab now calls the grid twice (range + MTD), Material issuance once more for the month. Memo for 90 s,
+// keyed by the write epoch, shared between concurrent callers (one promise per batch).
+const _v60iYieldMemo = new Map();
+const V60I_YIELD_MEMO_MS = 90000;
+async function gprComputeYield(bn, ...rest) {
+  const key = String(bn || '').toUpperCase();
+  const clone = v => (v && typeof v === 'object') ? JSON.parse(JSON.stringify(v)) : v;   // callers may decorate the result — never hand out the shared object
+  const hit = _v60iYieldMemo.get(key);
+  if (hit && hit.epoch === _v60iYieldEpoch && (Date.now() - hit.at) < V60I_YIELD_MEMO_MS) return hit.p.then(clone);
+  const p = _gprComputeYieldInner(bn, ...rest);
+  _v60iYieldMemo.set(key, { epoch: _v60iYieldEpoch, at: Date.now(), p });
+  p.catch(() => { if (_v60iYieldMemo.get(key) && _v60iYieldMemo.get(key).p === p) _v60iYieldMemo.delete(key); });
+  if (_v60iYieldMemo.size > 4000) _v60iYieldMemo.clear();
+  return p.then(clone);
+}
+async function _gprComputeYieldInner(batchNumber) {
   const bn = String(batchNumber || '').trim().toUpperCase();
   const masters = await gprLoadMasters();
   const order = gprFindOrder(bn);
@@ -31797,13 +31817,37 @@ app.get('/api/gpr/yield-report', async (req, res) => {
 //                           + cutting/salvage charged into them − cutting/salvage GENERATED that day
 //                           (+ approved crushing, added by the routes as before).
 // A month is the sum of its days.
+// v60I helpers ───────────────────────────────────────────────────────────────────────────────────────────
+async function _v60iMapLimit(items, limit, fn) {
+  const out = new Array(items.length); let i = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => { while (i < items.length) { const k = i++; out[k] = await fn(items[k], k); } });
+  await Promise.all(workers); return out;
+}
+// machine → floor, from the DPR actuals (the floor each machine last reported production on); 10-min cache
+let _v60iMcFloor = null, _v60iMcFloorAt = 0;
+async function _v60iMachineFloorMap() {
+  if (_v60iMcFloor && (Date.now() - _v60iMcFloorAt) < 600000) return _v60iMcFloor;
+  const sql = `SELECT UPPER(machine_id) AS mc, floor, MAX(date) AS d FROM production_actuals WHERE COALESCE(machine_id,'') <> '' AND COALESCE(floor,'') <> '' GROUP BY UPPER(machine_id), floor`;
+  const rows = pgPool ? (await pgPool.query(sql)).rows : db.prepare(sql).all();
+  const best = {};
+  rows.forEach(r => { if (!best[r.mc] || String(r.d) > String(best[r.mc].d)) best[r.mc] = { floor: r.floor, d: r.d }; });
+  const map = {}; Object.keys(best).forEach(mc => { map[mc] = best[mc].floor; const n = mc.replace(/^(OPM|MC)/, ''); if (n && !map[n]) map[n] = best[mc].floor; map['MC' + n] = map['MC' + n] || best[mc].floor; map['OPM' + n] = map['OPM' + n] || best[mc].floor; });
+  _v60iMcFloor = map; _v60iMcFloorAt = Date.now(); return map;
+}
+// oily-salvage kg a tank drew: Σ of its reuse lines booked to oily_salvage; legacy tanks (no lines) by primary account
+function _v60iOilyKgOfTank(r) {
+  let lines = null; try { lines = r.reuse_json ? JSON.parse(r.reuse_json) : null; } catch (_) { lines = null; }
+  if (Array.isArray(lines) && lines.length) return lines.reduce((a, l) => a + (String(l.account || '') === 'oily_salvage' ? (+l.kg || 0) : 0), 0);
+  return String(r.salvage_account || '') === 'oily_salvage' ? (+r.sk || 0) : 0;
+}
 async function _v57fDayYield(from, to, floorFilter) {
   const q = async (sql, p) => pgPool ? (await pgPool.query(sql, p)).rows : db.prepare(sql).all(...p);
   const P1 = pgPool ? '$1' : '?', P2 = pgPool ? '$2' : '?';
   const grid = {};
   const cell = (d, fl) => ((grid[d] = grid[d] || {})[fl] = grid[d][fl] || { num: 0, den: 0, batches: 0, working: [], crushKg: 0,
     material: { virginKg: 0, colourKg: 0, fgRemeltKg: 0, reuseInKg: 0, generatedKg: 0, generatedOwnKg: 0, trackingSalvageKg: 0, expectedSalvageKg: 0, returnUsedKg: 0, returnRecoveredKg: 0, tanks: 0,   // v59S: + expected WIP salvage   // v58M: + return solution; v58U: generated split as in the batch working
-                reuseCuttingKg: 0, reuseSalvageKg: 0, genCutAcceptedKg: 0, genCutPendingKg: 0, genSalManualAcceptedKg: 0, genSalManualPendingKg: 0, genTrkAcceptedKg: 0, genTrkPendingKg: 0 } });   // v59B: cuttings / salvage, accepted / pending
+                reuseCuttingKg: 0, reuseSalvageKg: 0, genCutAcceptedKg: 0, genCutPendingKg: 0, genSalManualAcceptedKg: 0, genSalManualPendingKg: 0, genTrkAcceptedKg: 0, genTrkPendingKg: 0,
+                oilyUsedKg: 0, oilyGenKg: 0, oilyGenAcceptedKg: 0, oilyGenPendingKg: 0 } });   // v60I: oily salvage as its own head   // v59B: cuttings / salvage, accepted / pending
   // ── material: NET consumption — a tank counts on the production day it was RELEASED to the
   //    machine (Hold & Release), not the day it was charged. Until then it is WIP and stays out of
   //    consumption: charged today and run tomorrow = tomorrow's material. Likewise an MMT charge not
@@ -31814,7 +31858,8 @@ async function _v57fDayYield(from, to, floorFilter) {
   const shift = (x) => { const d = new Date(Date.parse(from + 'T00:00:00Z') + x * 86400000); return d.toISOString().slice(0, 10); };
   const tt = await q(`SELECT floor, production_day, issued_at, scan_out_at, scan_in_at, created_at,
                              COALESCE(virgin_kg,0) AS v, COALESCE(colour_kg,0) AS c, COALESCE(fg_remelt_kg,0) AS f,
-                             COALESCE(salvage_kg,0) + COALESCE(cutting_kg,0) AS r, COALESCE(cutting_kg,0) AS rc, COALESCE(return_solution_kg,0) AS rs
+                             COALESCE(salvage_kg,0) + COALESCE(cutting_kg,0) AS r, COALESCE(cutting_kg,0) AS rc, COALESCE(return_solution_kg,0) AS rs,
+                             COALESCE(salvage_kg,0) AS sk, reuse_json, salvage_account
                         FROM gpr_tt WHERE production_day BETWEEN ${P1} AND ${P2}
                            OR SUBSTR(COALESCE(issued_at, scan_out_at, ''),1,10) BETWEEN ${P1} AND ${P2}`, [shift(-30), (() => { const d = new Date(Date.parse(to + 'T00:00:00Z') + 86400000); return d.toISOString().slice(0, 10); })()]);
   tt.forEach(r => {
@@ -31827,6 +31872,10 @@ async function _v57fDayYield(from, to, floorFilter) {
     const m = cell(d, fl).material;
     m.virginKg += +r.v || 0; m.colourKg += +r.c || 0; m.fgRemeltKg += +r.f || 0; m.reuseInKg += +r.r || 0; m.returnUsedKg += +r.rs || 0; m.tanks += 1;   // v58M item 8
     m.reuseCuttingKg += +r.rc || 0; m.reuseSalvageKg += (+r.r || 0) - (+r.rc || 0);   // v59B
+    // v60I: the oily-salvage share of this tank's reuse (its reuse lines; legacy tanks: the primary account) is
+    // shown under its own head and taken out of the salvage line — the net material is unchanged.
+    const oily = _v60iOilyKgOfTank(r);
+    if (oily > 0) { m.oilyUsedKg += oily; m.reuseSalvageKg -= oily; }
   });
   // v58M item 8: return solution recovered at batch close that day comes off the day's material
   try {
@@ -31837,10 +31886,24 @@ async function _v57fDayYield(from, to, floorFilter) {
   // v58U (Ishan, 21 Oct): split by source so the floor working reads like the batch working — "generated by
   // the floor's batches" (DPR cuttings, GPR entries) and "AIM / printing salvage recovered" (Tracking) are
   // separate lines; the total (and so the denominator) is unchanged.
+  // v60I: oily salvage generated is attributed to a FLOOR BY THE MACHINE entered on the entry (MC → floor from the
+  // DPR actuals), not by the row's floor column — oily entries carry no batch, so this is floor-wise only.
+  try {
+    const mcFloor = await _v60iMachineFloorMap();
+    const og = await q(`SELECT production_day AS d, floor, machine_id, CASE WHEN COALESCE(receipt_status,'')='pending' THEN 'p' ELSE 'a' END AS st, SUM(qty_kg) AS kg FROM gpr_ledger
+                         WHERE movement_type='generation' AND account='oily_salvage' AND COALESCE(receipt_status,'') <> 'rejected' AND source <> 'estimate'
+                           AND production_day BETWEEN ${P1} AND ${P2} GROUP BY production_day, floor, machine_id, CASE WHEN COALESCE(receipt_status,'')='pending' THEN 'p' ELSE 'a' END`, [from, to]);
+    og.forEach(r => {
+      const fl = mcFloor[String(r.machine_id || '').toUpperCase()] || r.floor || 'unknown'; if (floorFilter && fl !== floorFilter) return;
+      const m = cell(r.d, fl).material, kg = +r.kg || 0;
+      m.generatedKg += kg; m.generatedOwnKg += kg; m.oilyGenKg += kg; if (r.st === 'p') m.oilyGenPendingKg += kg; else m.oilyGenAcceptedKg += kg;
+    });
+  } catch (e) { console.warn('[v60I oily-gen] skipped:', e.message); }
   const gen = await q(`SELECT production_day AS d, floor, CASE WHEN source='tracking' THEN 'tracking' ELSE 'own' END AS src,
                                CASE WHEN account='cutting' THEN 'cut' ELSE 'sal' END AS acc, CASE WHEN COALESCE(receipt_status,'')='pending' THEN 'p' ELSE 'a' END AS st, SUM(qty_kg) AS kg FROM gpr_ledger
                         WHERE movement_type='generation' AND COALESCE(receipt_status,'') <> 'rejected'
                           AND source <> 'estimate' AND source <> 'return' AND account <> 'return_remelt'   -- v58I: no estimates, no returned FG
+                          AND account <> 'oily_salvage'   -- v60I: oily has its own head above (floor by machine)
                           AND production_day BETWEEN ${P1} AND ${P2} GROUP BY production_day, floor, CASE WHEN source='tracking' THEN 'tracking' ELSE 'own' END,
                           CASE WHEN account='cutting' THEN 'cut' ELSE 'sal' END, CASE WHEN COALESCE(receipt_status,'')='pending' THEN 'p' ELSE 'a' END`, [from, to]);   // v59B: + account / status split
   gen.forEach(r => { const fl = r.floor || 'unknown'; if (floorFilter && fl !== floorFilter) return;
@@ -31860,12 +31923,16 @@ async function _v57fDayYield(from, to, floorFilter) {
     (await q(`SELECT UPPER(batch_number) AS bn, SUM(COALESCE(qty_lakhs,0)) AS l FROM production_actuals WHERE UPPER(batch_number) IN (${ph}) GROUP BY UPPER(batch_number)`, bns))
       .forEach(r => { dpTot[r.bn] = +r.l || 0; });
     const yc = {};
+    // v60I: the per-batch yields were awaited one by one (~25 queries each, 60+ batches for a month — minutes);
+    // now computed up front, 6 at a time, through the memoised gprComputeYield.
+    const needBn = Array.from(new Set(dp.filter(r => { const fl = flOf[r.bn]; return fl && !(floorFilter && fl !== floorFilter) && (+r.l || 0) > 0 && (dpTot[r.bn] || 0) > 0; }).map(r => r.bn)));
+    await _v60iMapLimit(needBn, 6, async (bn) => { try { yc[bn] = await gprComputeYield(bn); } catch (e) { yc[bn] = null; console.warn('[v60I day-yield] ' + bn + ': ' + e.message); } });
     for (const r of dp) {
       const fl = flOf[r.bn]; if (!fl) continue;            // a batch with no GPR tank is not on a GPR floor yet
       if (floorFilter && fl !== floorFilter) continue;
       const dD = +r.l || 0, dTot = dpTot[r.bn] || 0;
       if (!(dD > 0) || !(dTot > 0)) continue;
-      const y = yc[r.bn] = yc[r.bn] || await gprComputeYield(r.bn);
+      const y = yc[r.bn]; if (!y) continue;
       // v57H (Ishan): weight = the batch's LABEL average weight (gprAvgMg — the same weight the TTs are
       // issued on); packable share = packable lakhs to date (packed + WIP) ÷ DPR production to date.
       const packL = Number(y.numerator.packedLakhs || 0) + Number(y.numerator.packableWipLakhs != null ? y.numerator.packableWipLakhs : y.numerator.wipLakhs || 0);   // v58K: WIP × A-grade
@@ -32441,7 +32508,7 @@ app.get('/api/gpr/material-issuance', async (req, res) => {
     const out = {};
     Object.entries(win).forEach(([k, [a, b]]) => {
       const floors = {};
-      const _blank = () => ({ packableKg: 0, days: 0, lakhs: 0, batches: new Set(), genCutSalKg: 0, genReturnKg: 0, consCutSalKg: 0, consReturnKg: 0 });
+      const _blank = () => ({ packableKg: 0, days: 0, lakhs: 0, batches: new Set(), genCutSalKg: 0, genReturnKg: 0, consCutSalKg: 0, consReturnKg: 0, genOilyKg: 0, consOilyKg: 0 });
       FL.forEach(fl => { floors[fl] = _blank(); });
       Object.entries(grid).forEach(([d, fls]) => {
         if (d < a || d > b) return;
@@ -32451,6 +32518,7 @@ app.get('/api/gpr/material-issuance', async (req, res) => {
           const M = c.material || {};   // v59X: reuse generated vs consumed on this floor-day (accepted + pending generation; WIP estimates excluded)
           floors[fl].genCutSalKg += Number(M.generatedKg || 0); floors[fl].genReturnKg += Number(M.returnRecoveredKg || 0);
           floors[fl].consCutSalKg += Number(M.reuseInKg || 0); floors[fl].consReturnKg += Number(M.returnUsedKg || 0);
+          floors[fl].genOilyKg += Number(M.oilyGenKg || 0); floors[fl].consOilyKg += Number(M.oilyUsedKg || 0);   // v60I: shown separately; already inside generatedKg / reuseInKg
           (c.working || []).forEach(w => { floors[fl].lakhs += Number(w.packableDayL || 0); floors[fl].batches.add(w.batch); });
         });
       });
@@ -32470,8 +32538,8 @@ app.get('/api/gpr/material-issuance', async (req, res) => {
         const r1 = v => +Number(v || 0).toFixed(1);
         return { floor: fl, packableKg: r1(f.packableKg), packableLakhs: +f.lakhs.toFixed(2), days: f.days, batches: f.batches.size,
                  packablePerDayKg: r1(perDay), issueKg: r1(issueKg),
-                 generatedKg: r1(genKg), generatedCutSalKg: r1(f.genCutSalKg), generatedReturnKg: r1(f.genReturnKg),
-                 consumedKg: r1(consKg), consumedCutSalKg: r1(f.consCutSalKg), consumedReturnKg: r1(f.consReturnKg),
+                 generatedKg: r1(genKg), generatedCutSalKg: r1(f.genCutSalKg - f.genOilyKg), generatedOilyKg: r1(f.genOilyKg), generatedReturnKg: r1(f.genReturnKg),
+                 consumedKg: r1(consKg), consumedCutSalKg: r1(f.consCutSalKg - f.consOilyKg), consumedOilyKg: r1(f.consOilyKg), consumedReturnKg: r1(f.consReturnKg),
                  genPerDayKg: r1(genPerDayKg), consPerDayKg: r1(consPerDayKg), netStockKg: r1(netStockKg),
                  adjustPerDayKg: r1(adjustPerDayKg), extraKgPerDay: 0, spreadDays, virginBeforeExtraKg: r1(virginBeforeExtraKg), virginPerDayKg: r1(virginPerDayKg) };
       });
