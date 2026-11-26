@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v60J';
+const APP_BUILD = 'v60K';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -13835,11 +13835,27 @@ app.get('/api/print-orders', async (req, res) => {
 });
 
 // POST /api/print-orders/bulk
-app.post('/api/print-orders/bulk', async (req, res) => {
+// v60K: per-name serial queue — fn runs after whatever is already running under that name; errors do not break the chain
+const _v60kChains = {};
+function _v60kSerial(name, fn) {
+  const prev = _v60kChains[name] || Promise.resolve();
+  const next = prev.then(fn, fn).catch(e => { console.error('[v60K serial ' + name + ']', e && e.message); });
+  _v60kChains[name] = next;
+  return next;
+}
+// v60K: last-written fingerprint per print order — a bulk save re-sent every ~20 s by every tab carried all 583
+// rows and rewrote every one; now only rows whose content changed since the last write are upserted.
+const _v60kPoFp = new Map();
+const _v60kPoFields = p => JSON.stringify([p.machineId||null,p.customer||null,p.batchNumber||null,p.pcCode||null,p.size||null,p.colour||null,p.printMatter||null,p.printType||null,p.qtyToPrint||null,p.orderQty||null,p.printedToDate||0,p.printedToDateManual||false,p.startDate||null,p.endDate||null,p.status||'pending',p.zone||null,p.remarks||null,p.productionOrderId||null,p._unassign===true]);
+app.post('/api/print-orders/bulk', (req, res) => _v60kSerial('print-orders-bulk', () => _v60kPrintOrdersBulk(req, res)));
+async function _v60kPrintOrdersBulk(req, res) {
   try {
-    const { printOrders } = req.body;
+    let { printOrders } = req.body;
     if (!Array.isArray(printOrders)) return res.status(400).json({ ok: false, error: 'printOrders array required' });
     if (!pgPool) return res.json({ ok: true, count: 0 });
+    const _sentN = printOrders.length;
+    printOrders = printOrders.filter(p => p && p.id && _v60kPoFp.get(p.id) !== _v60kPoFields(p));
+    if (!printOrders.length) return res.json({ ok: true, count: 0, unchanged: _sentN, savedAt: new Date().toISOString() });
     // v51ZF (Ishan, confirmed): machine_id write audit — the v50T pattern applied to print-order
     // assignment. Every save rewrites all rows, so timestamps carry no history (all of Maan Singh's
     // rows shared one updated_at second on 14 Aug) and a lost assignment leaves zero trace. One
@@ -13947,9 +13963,11 @@ app.post('/api/print-orders/bulk', async (req, res) => {
           p.startDate||null,p.endDate||null,p.status||'pending',p.zone||null,
           p.remarks||null,p.productionOrderId||null]);
     }
-    res.json({ ok: true, count: printOrders.length, assignGuardKept: _guardKept, savedAt: new Date().toISOString() });
+    printOrders.forEach(p => { if (p && p.id) _v60kPoFp.set(p.id, _v60kPoFields(p)); });
+    if (_v60kPoFp.size > 20000) _v60kPoFp.clear();
+    res.json({ ok: true, count: printOrders.length, unchanged: _sentN - printOrders.length, assignGuardKept: _guardKept, savedAt: new Date().toISOString() });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
-});
+}
 
 
 // DELETE /api/print-orders/:id — permanently delete a single print order by ID
@@ -14392,7 +14410,11 @@ app.post('/api/planning/restore', async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
-app.post('/api/planning/state', async (req, res) => {
+// v60K (Ishan, 26 Nov — pool exhausted within 30 s of every restart; logins failing plant-wide): the planning-state
+// save and the print-orders bulk save are now SERIALISED on the server (one at a time, callers queue), so a dozen
+// tabs saving at once no longer open a dozen overlapping merges on the pool. See _v60kSerial.
+app.post('/api/planning/state', (req, res) => _v60kSerial('planning-state', () => _v60kPlanningStatePost(req, res)));
+async function _v60kPlanningStatePost(req, res) {
   try { _v60hOrdersStatusInvalidate(); } catch (_) {}   // v60H: a planning save may change order status
   try {
     const { state } = req.body;
@@ -15049,7 +15071,7 @@ app.post('/api/planning/state', async (req, res) => {
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
-});
+}
 
 // GET active orders for a machine (used by DPR dropdown)
 
