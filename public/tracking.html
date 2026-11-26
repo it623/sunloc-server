@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v60K</title>
+<title>Sunloc Tracking Suite v1.0 · build v60L</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -604,10 +604,16 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v60K</p>
+      <p>Tracking Suite v1.0 · build v60L</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
+      <script>
+        // v60L: the main script (1.4 MB) loads after this markup; a department clicked before it has arrived used to
+        // throw "selectDept is not defined". This stub remembers the click and the real function replays it on load.
+        window._pendingDept = null;
+        if (typeof window.selectDept !== 'function') window.selectDept = function(d){ window._pendingDept = d; document.querySelectorAll('.dept-btn').forEach(b=>b.classList.toggle('active', b.id==='dept-'+d)); };
+      </script>
       <div class="dept-grid">
         <div class="dept-btn" onclick="selectDept('admin')" id="dept-admin"><span class="dept-icon">🔐</span>Admin</div>
         <div class="dept-btn" onclick="selectDept('planning')" id="dept-planning"><span class="dept-icon">📋</span>Planning</div>
@@ -635,7 +641,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v60K</p>
+      <p>Tracking Suite v1.0 · build v60L</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1657,7 +1663,7 @@ function getAlertCount(dept){
 
 let selectedDeptForLogin = null;
 
-function selectDept(dept){
+function selectDept(dept){   // v60L: replaces the pre-load stub (see the login markup); replays a click made before load
   selectedDeptForLogin = dept;
   document.querySelectorAll('.dept-btn').forEach(b=>b.classList.remove('active'));
   document.getElementById('dept-'+dept).classList.add('active');
@@ -1666,6 +1672,8 @@ function selectDept(dept){
   document.getElementById('login-pin').value='';
   document.getElementById('login-pin').focus();
 }
+window.selectDept = selectDept;   // v60L: the inline stub assigned window.selectDept; the declaration wins from here
+if (window._pendingDept) { try { selectDept(window._pendingDept); } catch(_) {} window._pendingDept = null; }
 
 function doLogin(){
   const pin = document.getElementById('login-pin').value;
