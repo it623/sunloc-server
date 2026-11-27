@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v60R';
+const APP_BUILD = 'v60S';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -297,7 +297,7 @@ app.use(express.json({ limit: '10mb' }));
 let _v60iYieldEpoch = 1;
 const _v60pLabelsAll = { at: 0, body: null, inflight: null };   // v60P: shared /api/tracking/labels-all body (see route)
 app.use((req, res, next) => { if (req.method !== 'GET' && req.method !== 'HEAD' && /^\/api\/(gpr|dpr|tracking|planning|orders)/.test(req.path || '')) _v60iYieldEpoch++; next(); });
-app.use((req, res, next) => { if (req.method !== 'GET' && req.method !== 'HEAD' && /^\/api\/tracking\//.test(req.path || '')) { _v60pLabelsAll.body = null; _v60pLabelsAll.at = 0; } next(); });   // v60P: label cache invalidation
+app.use((req, res, next) => { if (req.method !== 'GET' && req.method !== 'HEAD' && /^\/api\/tracking\//.test(req.path || '')) { _v60pLabelsAll.body = null; _v60pLabelsAll.at = 0; } if (req.method !== 'GET' && req.method !== 'HEAD' && /^\/api\/(tracking|temp-batches|dpr|planning|orders)/.test(req.path || '')) _v60sDropGetCache(); next(); });   // v60P: label cache invalidation; v60S: coalesced GET cache
 // ═══ v60M (Ishan, 27 Nov — "same issue again": login timeouts + dashboard zeros with NO pool/DB errors in the
 // log). The 26-min log window carried nothing that names a slow request, so the next slowdown must explain
 // itself: every request slower than 2 s is logged with its path, duration, status and client build; the event
@@ -363,6 +363,35 @@ try {
     console.log('[v60P] stall profiler armed (5 ms sampling, 30 s windows, reports stalls ≥ 2 s)');
   })().catch(e => console.warn('[v60P] stall profiler unavailable:', e && e.message));
 } catch (e) { console.warn('[v60P] stall profiler unavailable:', e && e.message); }
+// ═══ v60S (Ishan, 27 Nov 17:28 — v60R log: 2,036 requests in one minute, 945 of them slow, pool 20 busy / 99 waiting;
+// 469× /api/temp-batches/active and 385× /api/tracking/wip-summary, i.e. ~8 a second each). Those two endpoints are
+// read-only summaries that cannot differ from one second to the next, so identical GETs now share ONE execution and
+// ONE serialised body for a short TTL: callers arriving while a build is in flight wait for that build instead of
+// starting their own. Any write under /api/tracking/ or /api/temp-batches/ drops the cache. (The client-side loop
+// that produced the flood is fixed in dpr.html in the same build; this is the server's own guard against the next one.)
+const _v60sGetCache = new Map();
+function _v60sCoalesceGet(ttlMs) {
+  return (req, res, next) => {
+    if (req.method !== 'GET') return next();
+    const key = String(req.originalUrl || req.url || '');
+    const now = Date.now();
+    const hit = _v60sGetCache.get(key);
+    if (hit && hit.body != null && now - hit.at < ttlMs) { res.status(200).type('application/json').send(hit.body); return; }
+    if (hit && hit.inflight) { hit.waiters.push(res); return; }
+    const ent = { at: 0, body: null, inflight: true, waiters: [] };
+    _v60sGetCache.set(key, ent);
+    const settle = (status, body) => {
+      ent.inflight = false;
+      if (status === 200) { ent.at = Date.now(); ent.body = body; } else { ent.body = null; ent.at = 0; }
+      const w = ent.waiters; ent.waiters = [];
+      for (const r of w) { try { r.status(status).type('application/json').send(body); } catch (_) {} }
+    };
+    res.json = (obj) => { const body = JSON.stringify(obj); const st = res.statusCode || 200; settle(st, body); res.type('application/json'); return res.status(st).send(body); };
+    res.on('close', () => { if (ent.inflight) settle(503, JSON.stringify({ ok: false, error: 'coalesced request did not complete' })); });
+    next();
+  };
+}
+function _v60sDropGetCache() { _v60sGetCache.clear(); }
 (function _v60mLagMonitor() {
   let last = Date.now();
   setInterval(() => {
@@ -21047,7 +21076,7 @@ async function _v51jTempCoverage() {
   };
 }
 
-app.get('/api/temp-batches/active', async (req, res) => {
+app.get('/api/temp-batches/active', _v60sCoalesceGet(10000), async (req, res) => {   // v60S
   try {
     let batches;
     if (pgPool) {
@@ -22986,7 +23015,7 @@ app.get('/api/tracking/agrade-by-month', async (req, res) => {
   }
 });
 
-app.get('/api/tracking/wip-summary', async (req, res) => {
+app.get('/api/tracking/wip-summary', _v60sCoalesceGet(10000), async (req, res) => {   // v60S
   try {
     // v41ZH #1a: Planning's loadTrackingStatus (every 60s, on every open Planning tab) only reads
     // `closures` from this response — it explicitly discards `scanSummary`. The scan GROUP BY over
