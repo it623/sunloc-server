@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v60L</title>
+<title>Sunloc Tracking Suite v1.0 · build v60N</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -604,7 +604,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v60L</p>
+      <p>Tracking Suite v1.0 · build v60N</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -641,7 +641,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v60L</p>
+      <p>Tracking Suite v1.0 · build v60N</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1719,7 +1719,7 @@ function doLogin(){
   fetch(serverUrl + '/api/auth/login', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ username, pin, app: 'tracking', deviceToken: (localStorage.getItem('sunloc_device_token')||'') }),
-    signal: AbortSignal.timeout(8000)
+    signal: AbortSignal.timeout(15000)   // v60N: 8 s read a busy server as "unreachable"
   }).then(r=>r.json()).then(j=>{
     if (j.ok) {
       _acOnOk(j);
@@ -2448,12 +2448,24 @@ async function _flushPendingScans(){
         body:JSON.stringify({scan}), signal:AbortSignal.timeout(8000)
       });
       if(r.ok){
-        const j = await r.json();
-        if(j.ok || j.duplicate){
+        let j = null; try{ j = await r.json(); }catch(_){ j = null; }
+        if(j && (j.ok || j.duplicate)){
           // Confirmed — remove from pending queue
           _pendingScanQueue = _pendingScanQueue.filter(s=>s.id!==scan.id);
           _savePendingScans();
+        } else if(j && j.ok===false){
+          // v60M (27 Nov): the server ANSWERED and REFUSED (unknown label, blocked, upstream missing…). That is a
+          // final verdict, not a transient failure — before this build the scan stayed queued and was re-posted
+          // every 10 s forever (454 orphan-guard refusals in 26 min on 27 Nov, from a handful of stuck labels).
+          _pendingScanQueue = _pendingScanQueue.filter(s=>s.id!==scan.id);
+          _savePendingScans();
+          try{ trkAuditLog('SCAN_QUEUE_DROPPED', `${scan.batchNumber||''} label ${scan.labelId||''} (${scan.dept}:${scan.type}) — server refused: ${j.error||(j.unknown_label?'unknown label':'rejected')}`); }catch(_){}
+          console.warn('[v60M] dropped queued scan the server refused:', scan.id, j.error||'');
         }
+      } else if(r.status>=400 && r.status<500 && r.status!==408 && r.status!==429){
+        // v60M: a 4xx is also final (malformed scan) — drop rather than retry forever
+        _pendingScanQueue = _pendingScanQueue.filter(s=>s.id!==scan.id);
+        _savePendingScans();
       }
     }catch(e){ break; } // stop on network error, try again next cycle
   }
@@ -2468,8 +2480,8 @@ async function pushToServer(endpoint, data){
     const r=await fetch(serverUrl+endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data),signal:AbortSignal.timeout(8000)});
     if(!r.ok){
       setSyncBadge('offline');
-      // Queue scan for retry if it's a scan push
-      if(endpoint==='/api/tracking/scan' && data?.scan){
+      // Queue scan for retry if it's a scan push — v60M: only on a server/transient status, never on a 4xx verdict
+      if(endpoint==='/api/tracking/scan' && data?.scan && !(r.status>=400 && r.status<500 && r.status!==408 && r.status!==429)){
         if(!_pendingScanQueue.find(s=>s.id===data.scan.id)){
           _pendingScanQueue.push(data.scan);
           _savePendingScans();

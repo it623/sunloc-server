@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v60L';
+const APP_BUILD = 'v60N';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -296,6 +296,46 @@ app.use(express.json({ limit: '10mb' }));
 // for a short while (see _v60iYieldMemo); any write that could change them bumps this epoch so the memo is dropped.
 let _v60iYieldEpoch = 1;
 app.use((req, res, next) => { if (req.method !== 'GET' && req.method !== 'HEAD' && /^\/api\/(gpr|dpr|tracking|planning|orders)/.test(req.path || '')) _v60iYieldEpoch++; next(); });
+// ═══ v60M (Ishan, 27 Nov — "same issue again": login timeouts + dashboard zeros with NO pool/DB errors in the
+// log). The 26-min log window carried nothing that names a slow request, so the next slowdown must explain
+// itself: every request slower than 2 s is logged with its path, duration, status and client build; the event
+// loop is sampled each second and any stall over 500 ms is logged (a stall is what makes EVERY request —
+// login included — time out at once, pool or no pool); and one line per minute summarises requests, slow
+// requests, worst lag, pg pool occupancy and memory. /api/health carries the same counters under `perf`.
+const _v60mPerf = { reqs: 0, slow: 0, lagMax: 0, lagMinute: 0, lastSlow: [], since: Date.now() };
+app.use((req, res, next) => {
+  const t0 = process.hrtime.bigint();
+  _v60mPerf.reqs++;
+  res.on('finish', () => {
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    if (ms >= 2000) {
+      _v60mPerf.slow++;
+      const path = String(req.originalUrl || req.url || '').split('?')[0];
+      const cb = req.get('X-Sunloc-Build') || '';
+      console.warn(`[v60M slow] ${req.method} ${path} ${Math.round(ms)}ms status ${res.statusCode}${cb ? ' client ' + cb : ''}`);
+      _v60mPerf.lastSlow.push({ ts: new Date().toISOString(), method: req.method, path, ms: Math.round(ms), status: res.statusCode, client: cb });
+      if (_v60mPerf.lastSlow.length > 40) _v60mPerf.lastSlow.shift();
+    }
+  });
+  next();
+});
+// v60N: background pollers stand down while users are struggling (event loop stalled this minute, or callers waiting on the pool)
+function _v60nServerBusy() { return _v60mPerf.lagMinute > 500 || (pgPool && pgPool.waitingCount > 0); }
+(function _v60mLagMonitor() {
+  let last = Date.now();
+  setInterval(() => {
+    const now = Date.now(), lag = now - last - 1000; last = now;
+    if (lag > _v60mPerf.lagMinute) _v60mPerf.lagMinute = lag;
+    if (lag > _v60mPerf.lagMax) _v60mPerf.lagMax = lag;
+    if (lag > 500) console.warn(`[v60M lag] event loop blocked ~${lag}ms`);
+  }, 1000).unref();
+  setInterval(() => {
+    const pool = (typeof pgPool !== 'undefined' && pgPool) ? `pool ${pgPool.totalCount}/${pgPool.idleCount} idle/${pgPool.waitingCount} waiting` : 'pool n/a';
+    const mem = process.memoryUsage();
+    console.log(`[v60M perf] reqs=${_v60mPerf.reqs} slow=${_v60mPerf.slow} lagMax=${_v60mPerf.lagMinute}ms ${pool} rss=${Math.round(mem.rss / 1048576)}MB heap=${Math.round(mem.heapUsed / 1048576)}MB`);
+    _v60mPerf.reqs = 0; _v60mPerf.slow = 0; _v60mPerf.lagMinute = 0;
+  }, 60000).unref();
+})();
 // ═══ v50T HTML CACHE KILL (5 Aug — Railway logs prove a pre-v48Z planning.html STILL live on the
 // floor: "[v50L] list-less save (legacy/stale client)" fired twice in a 5-minute window). With
 // Cloudflare fronting the domain and express.static's default caching, deployed HTML does not
@@ -346,6 +386,8 @@ if (USE_POSTGRES) {
 
 // Direct async pg pool for large queries
 let pgPool = null;
+let pgAuthPool = null;   // v60N: dedicated 3-connection pool for /api/auth/* so logins never queue behind reports
+const _v60nAuth = () => pgAuthPool || pgPool;
 if (USE_POSTGRES) {
   try {
     const { Pool } = require('pg');
@@ -356,6 +398,16 @@ if (USE_POSTGRES) {
     // idle drop never crashes the server. keepAlive + idle/connect timeouts reduce idle-drop churn and
     // stop a single slow/stuck connection from blocking saves. (max 5 -> 10 for multi-device sync load.)
     pgPool.on('error', (err) => { console.error('[DB] idle pg client error (handled — NOT crashing):', err && err.message); });
+    // v60N (Ishan, 27 Nov — "one user couldn't log in, timed out"): login runs 3–4 tiny queries, but on the SHARED
+    // pool each one queues behind whatever report or save holds the 20 connections (10 s each). A separate 3-connection
+    // pool for authentication means a login never waits for a report. Falls back to the main pool if it cannot open.
+    try {
+      pgAuthPool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 3, keepAlive: true, idleTimeoutMillis: 60000, connectionTimeoutMillis: 10000 });
+      pgAuthPool.on('error', (err) => { console.error('[DB] idle auth pg client error (handled):', err && err.message); });
+    } catch (e) { console.warn('[v60N] auth pool unavailable — logins use the main pool:', e && e.message); pgAuthPool = null; }
+    // v60N: a runaway statement must not hold a pooled connection forever — 120 s cap on every main-pool connection.
+    // Routes that need longer (the v51ZA gap report) already SET LOCAL their own budget inside a transaction.
+    pgPool.on('connect', (c) => { c.query('SET statement_timeout = 120000').catch(() => {}); });
     console.log('[DB] Direct pg pool ready (max=20, keepAlive, idle/connect timeouts, error-handled)');
   } catch(e) { console.error('[DB] pg pool error:', e.message); }
 } else {
@@ -6881,7 +6933,14 @@ async function _doRefreshSapInvoices() {
   if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: APP_BUILD };
   const invoices = r.invoices || [];
   let upserted = 0;
+  const _t60m = Date.now(); let _slow60m = { doc: null, ms: 0 };   // v60M: per-invoice timing
   for (const inv of invoices) {
+    const _ti60m = Date.now();
+    // v60N: the poll is background work — it yields the event loop between invoices, and stops after 4 minutes so a
+    // slow SAP Service Layer can never pin this process for an hour (27 Nov: 25–30 s per invoice, tick never finished).
+    // The upsert is idempotent and the fetch is newest-first, so whatever is left is picked up by the next tick.
+    await new Promise(r => setImmediate(r));
+    if (Date.now() - _t60m > 240000) { console.warn(`[v60N sap-inv] tick budget (4 min) reached after ${upserted} invoice(s) — remaining ${invoices.length - upserted} deferred to next tick`); break; }
     const batchUdf = inv.U_SunlocBatch || '';
     const poUdf = inv.U_SunlocPO || '';
     let invReqId = null;
@@ -6913,7 +6972,7 @@ async function _doRefreshSapInvoices() {
     if (invReqId) {
       try {
         if (!inv.DocumentLines || !inv.DocumentLines.length) {
-          const full = await sap.getInvoice(inv.DocEntry);
+          const _tg60m = Date.now(); const full = await sap.getInvoice(inv.DocEntry); if (Date.now() - _tg60m >= 3000) console.warn(`[v60M sap-inv] getInvoice(${inv.DocEntry}) took ${Math.round((Date.now() - _tg60m) / 1000)}s`);
           if (full && full.ok && full.invoice && Array.isArray(full.invoice.DocumentLines)) inv.DocumentLines = full.invoice.DocumentLines;
         }
         const _linePcs48i = new Set((inv.DocumentLines || []).map(l => String(l.ItemCode || '').trim()).filter(Boolean));
@@ -6946,7 +7005,7 @@ async function _doRefreshSapInvoices() {
       } catch (e) { /* treat as not enriched */ }
       if (!_alreadyEnriched) {
         try {
-          const full = await sap.getInvoice(inv.DocEntry);
+          const _tg60m = Date.now(); const full = await sap.getInvoice(inv.DocEntry); if (Date.now() - _tg60m >= 3000) console.warn(`[v60M sap-inv] getInvoice(${inv.DocEntry}) took ${Math.round((Date.now() - _tg60m) / 1000)}s`);
           if (full && full.ok && full.invoice && Array.isArray(full.invoice.DocumentLines)) inv.DocumentLines = full.invoice.DocumentLines;
         } catch (e) { console.warn('[SAP] direct-invoice line enrich failed for DocEntry', inv.DocEntry, '-', e.message); }
       }
@@ -7394,7 +7453,11 @@ async function _doRefreshSapInvoices() {
     } catch (e) {
       console.warn('[SAP] invoice upsert error for DocEntry', inv.DocEntry, ':', e.message);
     }
+    const _d60m = Date.now() - _ti60m;
+    if (_d60m > _slow60m.ms) _slow60m = { doc: inv.DocEntry, ms: _d60m };
+    if (_d60m >= 5000) console.warn(`[v60M sap-inv] DocEntry ${inv.DocEntry} took ${Math.round(_d60m / 1000)}s`);
   }
+  console.log(`[v60M sap-inv] ${invoices.length} invoice(s) processed in ${Math.round((Date.now() - _t60m) / 1000)}s (slowest DocEntry ${_slow60m.doc} ${Math.round(_slow60m.ms / 1000)}s)`);
   // v57Y: A/R Credit Memos (material returns) ride the same poll; then the cancellation link pass.
   let _cn57y = { fetched: 0, upserted: 0, linked: 0 };
   try {
@@ -18689,7 +18752,7 @@ let _acSitesCache = null, _acSitesCacheAt = 0;
 async function _acTrustedSites() {
   if (_acSitesCache && (Date.now() - _acSitesCacheAt) < 60000) return _acSitesCache;
   let rows;
-  if (pgPool) rows = (await pgPool.query('SELECT id,label,cidr,created_at FROM trusted_sites ORDER BY label ASC')).rows;
+  if (pgPool) rows = (await _v60nAuth().query('SELECT id,label,cidr,created_at FROM trusted_sites ORDER BY label ASC')).rows;
   else rows = db.prepare('SELECT id,label,cidr,created_at FROM trusted_sites ORDER BY label ASC').all();
   _acSitesCache = rows || []; _acSitesCacheAt = Date.now();
   return _acSitesCache;
@@ -18706,7 +18769,7 @@ async function _acSeedTrustedSites() {
   ];
   try {
     for (const [id, label, cidr] of seeds) {
-      if (pgPool) await pgPool.query('INSERT INTO trusted_sites (id,label,cidr) VALUES ($1,$2,$3) ON CONFLICT (cidr) DO NOTHING', [id, label, cidr]);
+      if (pgPool) await _v60nAuth().query('INSERT INTO trusted_sites (id,label,cidr) VALUES ($1,$2,$3) ON CONFLICT (cidr) DO NOTHING', [id, label, cidr]);
       else db.prepare('INSERT INTO trusted_sites (id,label,cidr) VALUES (?,?,?) ON CONFLICT (cidr) DO NOTHING').run(id, label, cidr);
     }
     _acInvalidateSites();
@@ -18747,17 +18810,17 @@ async function _acUpsertDevice(id, username, appName, ip, userAgent) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
   const ua = (userAgent || '').toString().slice(0, 300);
   if (pgPool) {
-    const r = await pgPool.query('SELECT * FROM access_devices WHERE id=$1', [id]);
+    const r = await _v60nAuth().query('SELECT * FROM access_devices WHERE id=$1', [id]);
     if (r.rows[0]) {
       // v50D: only overwrite user_agent when we actually have one this request — never blank out
       // a previously-captured value on a request that happens to lack the header.
-      await pgPool.query(
+      await _v60nAuth().query(
         'UPDATE access_devices SET last_seen=$1, last_ip=$2, username=$3, app=$4, user_agent=COALESCE(NULLIF($6,\'\'), user_agent) WHERE id=$5',
         [ts, ip, username, appName, id, ua]
       );
       return r.rows[0];
     }
-    await pgPool.query('INSERT INTO access_devices (id,username,app,status,first_seen,last_seen,last_ip,user_agent) VALUES ($1,$2,$3,$4,$5,$5,$6,$7) ON CONFLICT (id) DO NOTHING', [id, username, appName, 'pending', ts, ip, ua]);
+    await _v60nAuth().query('INSERT INTO access_devices (id,username,app,status,first_seen,last_seen,last_ip,user_agent) VALUES ($1,$2,$3,$4,$5,$5,$6,$7) ON CONFLICT (id) DO NOTHING', [id, username, appName, 'pending', ts, ip, ua]);
     return { id, status: 'pending' };
   }
   const row = db.prepare('SELECT * FROM access_devices WHERE id=?').get(id);
@@ -18774,10 +18837,10 @@ async function _acUpsertDevice(id, username, appName, ip, userAgent) {
 async function _acCreateApproval(deviceId, user, appName, ip) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
   if (pgPool) {
-    const r = await pgPool.query("SELECT id, requested_at FROM login_approvals WHERE device_id=$1 AND username=$2 AND app=$3 AND status='pending' ORDER BY requested_at DESC LIMIT 1", [deviceId, user.username, appName]);
+    const r = await _v60nAuth().query("SELECT id, requested_at FROM login_approvals WHERE device_id=$1 AND username=$2 AND app=$3 AND status='pending' ORDER BY requested_at DESC LIMIT 1", [deviceId, user.username, appName]);
     if (r.rows[0] && (Date.now() - new Date(r.rows[0].requested_at).getTime()) < AC_HELD_TIMEOUT_MS) return r.rows[0].id;
     const id = crypto.randomUUID();
-    await pgPool.query('INSERT INTO login_approvals (id,device_id,username,role,app,ip,requested_at,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)', [id, deviceId, user.username, user.role, appName, ip, ts, 'pending']);
+    await _v60nAuth().query('INSERT INTO login_approvals (id,device_id,username,role,app,ip,requested_at,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)', [id, deviceId, user.username, user.role, appName, ip, ts, 'pending']);
     return id;
   }
   const row = db.prepare("SELECT id, requested_at FROM login_approvals WHERE device_id=? AND username=? AND app=? AND status='pending' ORDER BY requested_at DESC LIMIT 1").get(deviceId, user.username, appName);
@@ -18832,7 +18895,7 @@ app.post('/api/auth/login', async (req, res) => {
     if (!username || !pin || !appName) return res.status(400).json({ ok: false, error: 'Missing credentials' });
     let user;
     if (pgPool) {
-      const r = await pgPool.query('SELECT * FROM app_users WHERE username=$1 AND app=$2', [username, appName]);
+      const r = await _v60nAuth().query('SELECT * FROM app_users WHERE username=$1 AND app=$2', [username, appName]);
       user = r.rows[0];
     } else {
       user = db.prepare('SELECT * FROM app_users WHERE username=? AND app=?').get(username, appName);
@@ -18850,7 +18913,7 @@ app.post('/api/auth/login', async (req, res) => {
     const token = generateToken();
     const expires = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().replace('T',' ').slice(0,19);
     if (pgPool) {
-      await pgPool.query('INSERT INTO app_sessions (token,user_id,username,role,app,expires_at) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT(token) DO NOTHING',
+      await _v60nAuth().query('INSERT INTO app_sessions (token,user_id,username,role,app,expires_at) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT(token) DO NOTHING',
         [token, user.id, user.username, user.role, appName, expires]);
     } else {
       db.prepare('INSERT INTO app_sessions (token,user_id,username,role,app,expires_at) VALUES (?,?,?,?,?,?)').run(token, user.id, user.username, user.role, appName, expires);
@@ -18869,7 +18932,7 @@ app.get('/api/auth/login-users', async (req, res) => {
     const appName = req.query.app;
     if (!appName) return res.status(400).json({ ok: false, error: 'app required' });
     let rows;
-    if (pgPool) rows = (await pgPool.query('SELECT username, role, is_active FROM app_users WHERE app=$1 ORDER BY username ASC', [appName])).rows;
+    if (pgPool) rows = (await _v60nAuth().query('SELECT username, role, is_active FROM app_users WHERE app=$1 ORDER BY username ASC', [appName])).rows;
     else rows = db.prepare('SELECT username, role, is_active FROM app_users WHERE app=? ORDER BY username ASC').all(appName);
     const users = (rows || [])
       .filter(r => r.is_active !== 0 && r.is_active !== false)
@@ -18891,13 +18954,13 @@ app.post('/api/access/login-status', async (req, res) => {
     const devId = _acVerifyDevice(deviceToken);
     if (!approvalId || !devId) return res.status(400).json({ ok: false, denied: true, error: 'Invalid request' });
     let row;
-    if (pgPool) row = (await pgPool.query('SELECT * FROM login_approvals WHERE id=$1', [approvalId])).rows[0];
+    if (pgPool) row = (await _v60nAuth().query('SELECT * FROM login_approvals WHERE id=$1', [approvalId])).rows[0];
     else row = db.prepare('SELECT * FROM login_approvals WHERE id=?').get(approvalId);
     if (!row || row.device_id !== devId) return res.status(404).json({ ok: false, denied: true, error: 'Approval not found' });
     if (row.status === 'pending') {
       if ((Date.now() - new Date(row.requested_at).getTime()) > AC_HELD_TIMEOUT_MS) {
         const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
-        if (pgPool) await pgPool.query("UPDATE login_approvals SET status='expired', resolved_at=$1 WHERE id=$2 AND status='pending'", [ts, approvalId]);
+        if (pgPool) await _v60nAuth().query("UPDATE login_approvals SET status='expired', resolved_at=$1 WHERE id=$2 AND status='pending'", [ts, approvalId]);
         else db.prepare("UPDATE login_approvals SET status='expired', resolved_at=? WHERE id=? AND status='pending'").run(ts, approvalId);
         return res.json({ ok: false, denied: true, error: 'Approval timed out (15 min). Please try logging in again.' });
       }
@@ -18909,11 +18972,11 @@ app.post('/api/access/login-status', async (req, res) => {
       const token = generateToken();
       const expires = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
       let user;
-      if (pgPool) user = (await pgPool.query('SELECT * FROM app_users WHERE username=$1 AND app=$2', [row.username, row.app])).rows[0];
+      if (pgPool) user = (await _v60nAuth().query('SELECT * FROM app_users WHERE username=$1 AND app=$2', [row.username, row.app])).rows[0];
       else user = db.prepare('SELECT * FROM app_users WHERE username=? AND app=?').get(row.username, row.app);
       if (!user) return res.json({ ok: false, denied: true, error: 'User no longer exists' });
       if (pgPool) {
-        await pgPool.query('INSERT INTO app_sessions (token,user_id,username,role,app,expires_at) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT(token) DO NOTHING', [token, user.id, user.username, user.role, row.app, expires]);
+        await _v60nAuth().query('INSERT INTO app_sessions (token,user_id,username,role,app,expires_at) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT(token) DO NOTHING', [token, user.id, user.username, user.role, row.app, expires]);
         await pgPool.query("UPDATE login_approvals SET status='used' WHERE id=$1", [approvalId]);
       } else {
         db.prepare('INSERT INTO app_sessions (token,user_id,username,role,app,expires_at) VALUES (?,?,?,?,?,?)').run(token, user.id, user.username, user.role, row.app, expires);
@@ -21201,6 +21264,7 @@ app.get('/api/health', (req, res) => {
       dprRecords: dprCount?.c || 0,
       actualsEntries: actualsCount?.c || 0,
       uptime: Math.floor(process.uptime()) + 's',
+      perf: { lagMaxMs: _v60mPerf.lagMax, lastSlow: _v60mPerf.lastSlow, pool: (typeof pgPool !== 'undefined' && pgPool) ? { total: pgPool.totalCount, idle: pgPool.idleCount, waiting: pgPool.waitingCount } : null },   // v60M
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
@@ -23454,6 +23518,7 @@ app.get('/api/tracking/wastage', async (req, res) => {
   }catch(err){res.status(500).json({ok:false,error:err.message});}
 });
 // ── Individual scan save (called after each scan in/out) ──
+const _v60mOrphanSeen = new Map();   // v60M: label id → { n, t } throttle for orphan-guard log lines
 app.post('/api/tracking/scan', async (req, res) => {
   try {
     const { scan, adminOverride } = req.body;
@@ -23477,7 +23542,11 @@ app.post('/api/tracking/scan', async (req, res) => {
       const _lr = pgPool ? (await pgPool.query(_lq, [labelId])).rows
                          : db.prepare(_lq.replace('$1','?')).all(labelId);
       if (!_lr.length) {
-        console.warn(`[v51U orphan-guard] refused ${scan.dept}:${scan.type} — label ${labelId} not found (batch ${batchNumber})`);
+        // v60M: a device re-posting a refused scan every 10 s (454 lines in 26 min on 27 Nov) must not flood the
+        // log — one line per label per minute, with the count of refusals folded in.
+        const _og = _v60mOrphanSeen.get(labelId) || { n: 0, t: 0 }; _og.n++;
+        if (Date.now() - _og.t > 60000) { console.warn(`[v51U orphan-guard] refused ${scan.dept}:${scan.type} — label ${labelId} not found (batch ${batchNumber})${_og.n > 1 ? ' ×' + _og.n + ' since last line' : ''}`); _og.t = Date.now(); _og.n = 0; }
+        _v60mOrphanSeen.set(labelId, _og);
         return res.json({ ok:false, unknown_label:true, labelId, batchNumber,
           error:`This label is not in the system (${batchNumber||'unknown batch'}). It may be a duplicate print. Scan the original box label, or reprint the box from Label Generation.` });
       }
@@ -33296,6 +33365,7 @@ async function _startSapPollers() {
       console.log(`[SAP-Indent] Tick skipped — previous still running`);
       return;
     }
+    if (_v60nServerBusy()) { console.log(`[SAP-Indent] Tick skipped — server busy (v60N: lag ${_v60mPerf.lagMinute}ms, pool waiting ${pgPool ? pgPool.waitingCount : 0})`); return; }
     if (_indentPollBackoff > 0) {
       _indentPollBackoff--;
       console.log(`[SAP-Indent] Tick skipped — backing off (${_indentPollBackoff} more skips)`);
@@ -33325,6 +33395,7 @@ async function _startSapPollers() {
       console.log(`[SAP-Invoice] Tick skipped — previous still running`);
       return;
     }
+    if (_v60nServerBusy()) { console.log(`[SAP-Invoice] Tick skipped — server busy (v60N: lag ${_v60mPerf.lagMinute}ms, pool waiting ${pgPool ? pgPool.waitingCount : 0})`); return; }
     if (_invoicePollBackoff > 0) {
       _invoicePollBackoff--;
       console.log(`[SAP-Invoice] Tick skipped — backing off (${_invoicePollBackoff} more skips)`);

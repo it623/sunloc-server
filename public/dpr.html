@@ -499,7 +499,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v60L</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v60N</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -6157,7 +6157,7 @@ async function doDprLogin() {
       const r = await fetch(serverUrl + '/api/auth/login', {
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({ username: role, pin, app: 'dpr', deviceToken: (localStorage.getItem('sunloc_device_token')||'') }),
-        signal: AbortSignal.timeout(5000)
+        signal: AbortSignal.timeout(15000)   // v60N
       });
       let j = await r.json();
       if (j.deviceToken) { try { localStorage.setItem('sunloc_device_token', j.deviceToken); } catch(e){} }
@@ -6461,7 +6461,7 @@ async function loadDprLoginUsers() {
     if (!serverUrl) return;
     const sel = document.getElementById('auth-role');
     if (!sel) return;
-    const r = await fetch(serverUrl + '/api/auth/login-users?app=dpr', { signal: AbortSignal.timeout(6000) });
+    const r = await fetch(serverUrl + '/api/auth/login-users?app=dpr', { signal: AbortSignal.timeout(15000) });
     const j = await r.json();
     if (j && j.ok && Array.isArray(j.users) && j.users.length) {
       const prev = sel.value;
