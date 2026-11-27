@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v60S';
+const APP_BUILD = 'v60T';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -18766,15 +18766,39 @@ app.get('/api/actuals/order/:orderId', async (req, res) => {
 // ─── Auth helper ──────────────────────────────────────────────
 function generateToken() { return crypto.randomBytes(32).toString('hex'); }
 
+// ═══ v60T (Ishan, 27 Nov 17:47 — v60S log: "[v60R sync-shim] verifyToken server.js:18774 ×10 ~950ms" EVERY minute).
+// Every authenticated request looked its session up through the synchronous Postgres shim: one spawned process,
+// ~100 ms of frozen event loop, per request. Sessions now live in memory: preloaded from app_sessions at boot (one
+// async query), added at login, evicted at logout, expiry checked in JS exactly as before. The shim is used only for
+// a token that is neither cached nor expired — in practice a request that beats the boot preload — and that result
+// is cached too, so the steady-state cost is zero spawns.
+const _v60tSessions = new Map();   // token → session row
+let _v60tSessionsPreloaded = false;
+async function _v60tPreloadSessions() {
+  if (!pgPool) return;
+  try {
+    const r = await _v60nAuth().query(`SELECT * FROM app_sessions`);
+    for (const row of r.rows) if (row && row.token) _v60tSessions.set(row.token, row);
+    _v60tSessionsPreloaded = true;
+    console.log(`[v60T] session cache preloaded: ${r.rows.length} row(s)`);
+  } catch (e) { console.warn('[v60T] session preload failed (shim fallback stays in place):', e && e.message); }
+}
+function _v60tSessionCache(session) { if (session && session.token) _v60tSessions.set(session.token, session); }
+function _v60tSessionEvict(token) { if (token) _v60tSessions.delete(token); }
 function verifyToken(token) {
   if (!token) return null;
   try {
-    // db wrapper reads from PostgreSQL when pgPool is active
-    // Using simple token lookup (datetime comparison handled by expiry logic below)
-    const session = db.prepare(`SELECT * FROM app_sessions WHERE token = ?`).get(token);
-    if (!session) return null;
+    let session = _v60tSessions.get(token) || null;
+    if (!session) {
+      if (pgPool && _v60tSessionsPreloaded) return null;   // v60T: the cache is authoritative once loaded — unknown token = no session
+      // db wrapper reads from PostgreSQL when pgPool is active
+      // Using simple token lookup (datetime comparison handled by expiry logic below)
+      session = db.prepare(`SELECT * FROM app_sessions WHERE token = ?`).get(token);
+      if (!session) return null;
+      _v60tSessionCache(session);
+    }
     // Check expiry in JS (works for both SQLite and PostgreSQL datetime formats)
-    if (session.expires_at && new Date(session.expires_at) < new Date()) return null;
+    if (session.expires_at && new Date(session.expires_at) < new Date()) { _v60tSessionEvict(token); return null; }
     return session;
   } catch(e) { return null; }
 }
@@ -19006,6 +19030,7 @@ app.post('/api/auth/login', async (req, res) => {
     if (pgPool) {
       await _v60nAuth().query('INSERT INTO app_sessions (token,user_id,username,role,app,expires_at) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT(token) DO NOTHING',
         [token, user.id, user.username, user.role, appName, expires]);
+      _v60tSessionCache({ token, user_id: user.id, username: user.username, role: user.role, app: appName, expires_at: expires });   // v60T
     } else {
       db.prepare('INSERT INTO app_sessions (token,user_id,username,role,app,expires_at) VALUES (?,?,?,?,?,?)').run(token, user.id, user.username, user.role, appName, expires);
     }
@@ -19068,6 +19093,7 @@ app.post('/api/access/login-status', async (req, res) => {
       if (!user) return res.json({ ok: false, denied: true, error: 'User no longer exists' });
       if (pgPool) {
         await _v60nAuth().query('INSERT INTO app_sessions (token,user_id,username,role,app,expires_at) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT(token) DO NOTHING', [token, user.id, user.username, user.role, row.app, expires]);
+        _v60tSessionCache({ token, user_id: user.id, username: user.username, role: user.role, app: row.app, expires_at: expires });   // v60T
         await pgPool.query("UPDATE login_approvals SET status='used' WHERE id=$1", [approvalId]);
       } else {
         db.prepare('INSERT INTO app_sessions (token,user_id,username,role,app,expires_at) VALUES (?,?,?,?,?,?)').run(token, user.id, user.username, user.role, row.app, expires);
@@ -19234,6 +19260,7 @@ app.post('/api/auth/logout', async (req, res) => {
     const session = verifyToken(token);
     if (session) {
       logAudit(session.username, session.role, session.app, 'LOGOUT', null, req.ip);
+      _v60tSessionEvict(token);   // v60T
       if (pgPool) await pgPool.query('DELETE FROM app_sessions WHERE token=$1', [token]);
       else db.prepare('DELETE FROM app_sessions WHERE token=?').run(token);
     }
@@ -33440,6 +33467,7 @@ app.listen(PORT, () => {
     // user was reconnecting; it is idempotent housekeeping and nothing waits on it.
     setTimeout(() => _backfillDispatchActuals().catch(e => console.warn('[v37I backfill] failed:', e?.message)), 5 * 60 * 1000).unref();
     // v39: Start SAP background pollers (after DB is fully ready).
+    _v60tPreloadSessions().catch(() => {});   // v60T: session cache
     _startSapPollers();
   });
 });
