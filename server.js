@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v60N';
+const APP_BUILD = 'v60P';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -295,7 +295,9 @@ app.use(express.json({ limit: '10mb' }));
 // v60I (Ishan, 24 Nov — Yield / Material issuance "Computing…" for minutes): per-batch yield results are memoised
 // for a short while (see _v60iYieldMemo); any write that could change them bumps this epoch so the memo is dropped.
 let _v60iYieldEpoch = 1;
+const _v60pLabelsAll = { at: 0, body: null, inflight: null };   // v60P: shared /api/tracking/labels-all body (see route)
 app.use((req, res, next) => { if (req.method !== 'GET' && req.method !== 'HEAD' && /^\/api\/(gpr|dpr|tracking|planning|orders)/.test(req.path || '')) _v60iYieldEpoch++; next(); });
+app.use((req, res, next) => { if (req.method !== 'GET' && req.method !== 'HEAD' && /^\/api\/tracking\//.test(req.path || '')) { _v60pLabelsAll.body = null; _v60pLabelsAll.at = 0; } next(); });   // v60P: label cache invalidation
 // ═══ v60M (Ishan, 27 Nov — "same issue again": login timeouts + dashboard zeros with NO pool/DB errors in the
 // log). The 26-min log window carried nothing that names a slow request, so the next slowdown must explain
 // itself: every request slower than 2 s is logged with its path, duration, status and client build; the event
@@ -321,12 +323,53 @@ app.use((req, res, next) => {
 });
 // v60N: background pollers stand down while users are struggling (event loop stalled this minute, or callers waiting on the pool)
 function _v60nServerBusy() { return _v60mPerf.lagMinute > 500 || (pgPool && pgPool.waitingCount > 0); }
+// ═══ v60P (Ishan, 27 Nov 17:01 — v60N log: "[v60M lag] event loop blocked ~48045ms" at 11:25:56, no line names the
+// culprit). A blocked loop cannot log what blocks it, so V8's sampling profiler — which runs on its OWN thread — is
+// kept running in 30-s windows. When a window saw a stall of 2 s or more, the window's profile is summarised
+// (top functions by self and by inclusive time, with file:line) as [v60P stall-profile]; quiet windows are dropped.
+// Overhead: ~1–2 % CPU at a 5 ms sampling interval. /api/health carries the last summary under perf.lastStall.
+const _v60pStall = { windowLag: 0, last: null };
+try {
+  const _insp = require('inspector');
+  const _sess = new _insp.Session(); _sess.connect();
+  const _post = (m, pr) => new Promise((ok, no) => _sess.post(m, pr || {}, (e, r) => e ? no(e) : ok(r)));
+  const _summarise = (profile, lag) => {
+    try {
+      const nodes = new Map(); for (const n of profile.nodes || []) nodes.set(n.id, n);
+      const selfMs = new Map();
+      const samples = profile.samples || [], deltas = profile.timeDeltas || [];
+      for (let i = 0; i < samples.length; i++) selfMs.set(samples[i], (selfMs.get(samples[i]) || 0) + (deltas[i] || 0) / 1000);
+      const parent = new Map(); for (const n of profile.nodes || []) for (const c of (n.children || [])) parent.set(c, n.id);
+      const inclMs = new Map();
+      for (const [id, ms] of selfMs) { let cur = id; const seen = new Set(); while (cur != null && !seen.has(cur)) { seen.add(cur); inclMs.set(cur, (inclMs.get(cur) || 0) + ms); cur = parent.get(cur); } }
+      const label = id => { const n = nodes.get(id); if (!n) return '?'; const f = n.callFrame || {}; const file = String(f.url || '').split('/').pop(); return `${f.functionName || '(anon)'} ${file}${f.lineNumber != null ? ':' + (f.lineNumber + 1) : ''}`; };
+      const skip = id => /^\((root|program|idle)\)/.test(label(id));
+      const top = (m, k) => Array.from(m.entries()).filter(([id]) => !skip(id)).sort((a, b) => b[1] - a[1]).slice(0, k).map(([id, ms]) => `${label(id)} ${Math.round(ms)}ms`);
+      const line = `[v60P stall-profile] window lag ${lag}ms — SELF: ${top(selfMs, 10).join(' | ')} — INCLUSIVE: ${top(inclMs, 10).join(' | ')}`;
+      console.warn(line);
+      _v60pStall.last = { at: new Date().toISOString(), lagMs: lag, self: top(selfMs, 10), inclusive: top(inclMs, 10) };
+    } catch (e) { console.warn('[v60P stall-profile] summarise failed:', e && e.message); }
+  };
+  (async () => {
+    await _post('Profiler.enable'); await _post('Profiler.setSamplingInterval', { interval: 5000 }); await _post('Profiler.start');
+    setInterval(async () => {
+      try {
+        const r = await _post('Profiler.stop');
+        const lag = _v60pStall.windowLag; _v60pStall.windowLag = 0;
+        await _post('Profiler.start');
+        if (lag >= 2000 && r && r.profile) _summarise(r.profile, lag);
+      } catch (e) { console.warn('[v60P stall-profile] window failed:', e && e.message); }
+    }, 30000).unref();
+    console.log('[v60P] stall profiler armed (5 ms sampling, 30 s windows, reports stalls ≥ 2 s)');
+  })().catch(e => console.warn('[v60P] stall profiler unavailable:', e && e.message));
+} catch (e) { console.warn('[v60P] stall profiler unavailable:', e && e.message); }
 (function _v60mLagMonitor() {
   let last = Date.now();
   setInterval(() => {
     const now = Date.now(), lag = now - last - 1000; last = now;
     if (lag > _v60mPerf.lagMinute) _v60mPerf.lagMinute = lag;
     if (lag > _v60mPerf.lagMax) _v60mPerf.lagMax = lag;
+    if (lag > _v60pStall.windowLag) _v60pStall.windowLag = lag;   // v60P
     if (lag > 500) console.warn(`[v60M lag] event loop blocked ~${lag}ms`);
   }, 1000).unref();
   setInterval(() => {
@@ -21264,7 +21307,7 @@ app.get('/api/health', (req, res) => {
       dprRecords: dprCount?.c || 0,
       actualsEntries: actualsCount?.c || 0,
       uptime: Math.floor(process.uptime()) + 's',
-      perf: { lagMaxMs: _v60mPerf.lagMax, lastSlow: _v60mPerf.lastSlow, pool: (typeof pgPool !== 'undefined' && pgPool) ? { total: pgPool.totalCount, idle: pgPool.idleCount, waiting: pgPool.waitingCount } : null },   // v60M
+      perf: { lagMaxMs: _v60mPerf.lagMax, lastStall: _v60pStall.last, lastSlow: _v60mPerf.lastSlow, pool: (typeof pgPool !== 'undefined' && pgPool) ? { total: pgPool.totalCount, idle: pgPool.idleCount, waiting: pgPool.waitingCount } : null },   // v60M
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
@@ -23182,7 +23225,16 @@ app.get('/api/tracking/labels-all', async (req, res) => {
   try {
     const COLS = `id,batch_number,label_number,size,qty,is_partial,is_orange,parent_label_id,customer,colour,pc_code,po_number,machine_id,printing_matter,generated,printed,printed_at,voided,void_reason,voided_at,voided_by,wo_status,ship_to,bill_to,is_excess,excess_num,excess_total,normal_total,avg_wt,nett_wt,gross_wt`;   // v50E: weights
     const m=r=>({id:r.id,batchNumber:r.batch_number,labelNumber:r.label_number,size:r.size,qty:r.qty,isPartial:!!r.is_partial,isOrange:!!r.is_orange,parentLabelId:r.parent_label_id||null,customer:r.customer||'',colour:r.colour||'',pcCode:r.pc_code||'',poNumber:r.po_number||'',machineId:r.machine_id||'',printingMatter:r.printing_matter||'',generated:r.generated,printed:!!r.printed,printedAt:r.printed_at||null,voided:!!r.voided,voidReason:r.void_reason||'',voidedAt:r.voided_at||null,voidedBy:r.voided_by||null,woStatus:r.wo_status||null,shipTo:r.ship_to||'',billTo:r.bill_to||'',isExcess:!!r.is_excess,excessNum:r.excess_num||null,excessTotal:r.excess_total||null,normalTotal:r.normal_total||null,avgWt:r.avg_wt==null?'':String(r.avg_wt),nettWt:r.nett_wt==null?'':String(r.nett_wt),grossWt:r.gross_wt==null?'':String(r.gross_wt),isLegacy:Number(r.is_legacy_rebatch)===1,legacyRef:r.legacy_ref||null,legacyNum:r.legacy_num||null,legacyMode:r.legacy_mode||null,legacyMfg:r.legacy_mfg||null,legacyExp:r.legacy_exp||null,legacyPrinted:Number(r.legacy_printed)===1,legacySapDocEntry:r.legacy_sap_doc_entry||null,legacySapDocNum:r.legacy_sap_doc_num||null,legacyCardCode:r.legacy_card_code||null});   // v50E: weights survive the labels-all replace · v53P: R-series fields
-    if(pgPool){const r=await pgPool.query(`SELECT ${COLS} FROM tracking_labels ORDER BY generated DESC`);res.json({ok:true,labels:r.rows.map(m)});}
+    // v60P: the full label table (~10k rows, 3.5–4 s) was being pulled by several clients within the same few seconds
+    // (v60N log: 3 pulls in 2 s). One serialised body is now shared for 15 s and concurrent pulls join the one in flight;
+    // any write under /api/tracking/ drops the cache, so a freshly generated label is never served stale.
+    if(pgPool){
+      if(_v60pLabelsAll.body && Date.now()-_v60pLabelsAll.at<15000){ res.type('application/json').send(_v60pLabelsAll.body); return; }
+      if(!_v60pLabelsAll.inflight){
+        _v60pLabelsAll.inflight=(async()=>{ const r=await pgPool.query(`SELECT ${COLS} FROM tracking_labels ORDER BY generated DESC`); const body=JSON.stringify({ok:true,labels:r.rows.map(m)}); _v60pLabelsAll.body=body; _v60pLabelsAll.at=Date.now(); return body; })().finally(()=>{ _v60pLabelsAll.inflight=null; });
+      }
+      const body=await _v60pLabelsAll.inflight; res.type('application/json').send(body);
+    }
     else{const labels=db.prepare(`SELECT ${COLS} FROM tracking_labels ORDER BY generated DESC`).all();res.json({ok:true,labels:labels.map(m)});}
   }catch(err){res.status(500).json({ok:false,error:err.message});}
 });
@@ -33321,7 +33373,9 @@ app.listen(PORT, () => {
     // manual records. Fixes data from before the SUM-based recompute was introduced where
     // multiple records overwrote each other and only the last per-record qty was saved.
     // Runs once per server boot, idempotent (running again is a no-op since values would match).
-    _backfillDispatchActuals().catch(e => console.warn('[v37I backfill] failed:', e?.message));
+    // v60P: deferred 5 min and paced — on 27 Nov this ran ~4,000 queries in the first 90 s after boot, exactly when every
+    // user was reconnecting; it is idempotent housekeeping and nothing waits on it.
+    setTimeout(() => _backfillDispatchActuals().catch(e => console.warn('[v37I backfill] failed:', e?.message)), 5 * 60 * 1000).unref();
     // v39: Start SAP background pollers (after DB is fully ready).
     _startSapPollers();
   });
@@ -33462,6 +33516,7 @@ async function _backfillDispatchActuals() {
         }
         await _recomputeDispatchActuals(b, latest?.vehicle_no || null, latest?.invoice_no || null);
         updated++;
+        await new Promise(r => setTimeout(r, 25));   // v60P: pace — ~2,000 batches spread over ~1 min instead of a burst
       } catch(e) { console.warn(`[v37I backfill] batch ${b}:`, e?.message); }
     }
     console.log(`[v37I/v40 P18.14d backfill] Recomputed dispatch_actuals for ${updated} batch(es) — includes legacy-only and straddle batches.`);
