@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v60P';
+const APP_BUILD = 'v60R';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -375,7 +375,14 @@ try {
   setInterval(() => {
     const pool = (typeof pgPool !== 'undefined' && pgPool) ? `pool ${pgPool.totalCount}/${pgPool.idleCount} idle/${pgPool.waitingCount} waiting` : 'pool n/a';
     const mem = process.memoryUsage();
-    console.log(`[v60M perf] reqs=${_v60mPerf.reqs} slow=${_v60mPerf.slow} lagMax=${_v60mPerf.lagMinute}ms ${pool} rss=${Math.round(mem.rss / 1048576)}MB heap=${Math.round(mem.heapUsed / 1048576)}MB`);
+    const sy = global._v60rSyncShim || null;   // v60R: synchronous Postgres shim usage this minute (each call blocks the loop)
+    const syTxt = sy ? ` syncq=${sy.n}/${Math.round(sy.ms)}ms` : '';
+    console.log(`[v60M perf] reqs=${_v60mPerf.reqs} slow=${_v60mPerf.slow} lagMax=${_v60mPerf.lagMinute}ms ${pool} rss=${Math.round(mem.rss / 1048576)}MB heap=${Math.round(mem.heapUsed / 1048576)}MB${syTxt}`);
+    if (sy && sy.ms >= 500) {
+      const top = Object.entries(sy.sites).sort((a, b) => b[1].ms - a[1].ms).slice(0, 6).map(([k, v]) => `${k} ×${v.n} ${Math.round(v.ms)}ms`).join(' | ');
+      console.warn(`[v60R sync-shim] blocking call sites this minute: ${top}`);
+    }
+    if (sy) { sy.n = 0; sy.ms = 0; sy.sites = {}; }
     _v60mPerf.reqs = 0; _v60mPerf.slow = 0; _v60mPerf.lagMinute = 0;
   }, 60000).unref();
 })();
@@ -5708,10 +5715,21 @@ async function loadGrossOverrides() {
 //   override (if set)  →  pure batch-keyed sum (cache)  →  direct query fallback  →  0
 // In PG mode the cache is warm before any per-order loop runs (planning/state warms it first), so
 // the slow synchronous fallback is only ever hit for one-off single-batch lookups or SQLite dev.
+let _v60rGrossColdLogged = false;   // v60R
 function effectiveGross(batchNumber) {
   if (!batchNumber) return 0;
   if (Object.prototype.hasOwnProperty.call(_grossOverride, batchNumber)) return _grossOverride[batchNumber];
   if (_grossByBatch && Object.prototype.hasOwnProperty.call(_grossByBatch, batchNumber)) return _grossByBatch[batchNumber];
+  // ═══ v60R (Ishan, 27 Nov 17:10 — the 39 s / 48 s stalls, named by the v60P profiler) ═══════════════════════════
+  // On Postgres the fallback below ran through db-pg-sync: a NEW node process spawned and connected to Railway Postgres
+  // for ONE query, blocking the event loop ~300–500 ms each time. _buildClosedBatchesPayload called this for every
+  // closed batch that has no production_actuals row (never in _grossByBatch, so it missed every time, twice per batch,
+  // on every 45-s cache rebuild) — ~100 misses = the whole server frozen for 40 s, logins included.
+  // _grossByBatch is a full GROUP BY over production_actuals, so a batch absent from it has NO actuals: its sum is 0.
+  if (pgPool) {
+    if (!_grossByBatch) { warmActualsCache().catch(() => {}); if (!_v60rGrossColdLogged) { _v60rGrossColdLogged = true; console.warn('[v60R] effectiveGross asked before the actuals cache was warm — served 0, warm started'); } }
+    return 0;
+  }
   try {
     const row = db.prepare('SELECT SUM(qty_lakhs) as total FROM production_actuals WHERE batch_number = ?').get(batchNumber);
     return (row && row.total) ? (parseFloat(row.total) || 0) : 0;
@@ -5723,6 +5741,7 @@ function getOrderActuals(orderId, batchNumber) {
     return _actualsCache[orderId] || _actualsCache[batchNumber] || 0;
   }
   // Falls back to SQLite only — cache should always be warm when pgPool is available
+  if (pgPool) { warmActualsCache().catch(() => {}); return 0; }   // v60R: never a synchronous spawned query on Postgres
   let rows;
   if (orderId) {
     rows = db.prepare('SELECT SUM(qty_lakhs) as total FROM production_actuals WHERE order_id = ?').get(orderId);
@@ -21292,11 +21311,26 @@ app.get('/api/reconciliation/history', async (req, res) => {
   } catch(err) { res.status(500).json({ ok:false, error:err.message }); }
 });
 
-app.get('/api/health', (req, res) => {
+const _v60rHealthCache = { at: 0, planningRow: null, dprCount: null, actualsCount: null };
+app.get('/api/health', async (req, res) => {
   try {
-    const planningRow  = db.prepare('SELECT saved_at FROM planning_state ORDER BY id DESC LIMIT 1').get();
-    const dprCount     = db.prepare('SELECT COUNT(*) as c FROM dpr_records').get();
-    const actualsCount = db.prepare('SELECT COUNT(*) as c FROM production_actuals').get();
+    // v60R: on Postgres these three ran through the synchronous spawn shim — three child processes per health
+    // call, ~1 s of blocked event loop, and every app calls /api/health on its login screen. Now async + 30-s cache.
+    let planningRow, dprCount, actualsCount;
+    if (pgPool) {
+      if (Date.now() - _v60rHealthCache.at > 30000) {
+        const [a, b, c] = await Promise.all([
+          pgPool.query('SELECT saved_at FROM planning_state ORDER BY id DESC LIMIT 1'),
+          pgPool.query('SELECT COUNT(*) as c FROM dpr_records'),
+          pgPool.query('SELECT COUNT(*) as c FROM production_actuals')]);
+        _v60rHealthCache.planningRow = a.rows[0]; _v60rHealthCache.dprCount = b.rows[0]; _v60rHealthCache.actualsCount = c.rows[0]; _v60rHealthCache.at = Date.now();
+      }
+      planningRow = _v60rHealthCache.planningRow; dprCount = _v60rHealthCache.dprCount; actualsCount = _v60rHealthCache.actualsCount;
+    } else {
+      planningRow  = db.prepare('SELECT saved_at FROM planning_state ORDER BY id DESC LIMIT 1').get();
+      dprCount     = db.prepare('SELECT COUNT(*) as c FROM dpr_records').get();
+      actualsCount = db.prepare('SELECT COUNT(*) as c FROM production_actuals').get();
+    }
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',

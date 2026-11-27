@@ -54,7 +54,26 @@ process.stdin.on('end', () => {
 const syncHelperPath = path.join(os.tmpdir(), 'sunloc-pg-sync.js');
 fs.writeFileSync(syncHelperPath, SYNC_HELPER);
 
+// v60R: every call here spawns a child node process and blocks the event loop for its whole life. Count them, time
+// them and record the server.js call site, so the per-minute [v60M perf] line can name what is left to convert.
+global._v60rSyncShim = global._v60rSyncShim || { n: 0, ms: 0, sites: {} };
+function _v60rSite() {
+  try {
+    const st = String(new Error().stack || '').split('\n').slice(2);
+    const f = st.find(l => /server\.js:\d+/.test(l)) || st[1] || '';
+    const m = /server\.js:(\d+)/.exec(f); const fn = /at ([^ (]+)/.exec(f);
+    return (fn ? fn[1] : '?') + (m ? ' server.js:' + m[1] : '');
+  } catch (_) { return '?'; }
+}
 function pgQuerySync(sql, params, method) {
+  const _t0 = Date.now();
+  try { return _pgQuerySyncInner(sql, params, method); }
+  finally {
+    const ms = Date.now() - _t0, sh = global._v60rSyncShim; sh.n++; sh.ms += ms;
+    const k = _v60rSite(); const e = sh.sites[k] || (sh.sites[k] = { n: 0, ms: 0 }); e.n++; e.ms += ms;
+  }
+}
+function _pgQuerySyncInner(sql, params, method) {
   const input = JSON.stringify({ sql, params: params || [], method });
   const result = spawnSync(process.execPath, [syncHelperPath], {
     input,
